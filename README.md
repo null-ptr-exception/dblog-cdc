@@ -64,6 +64,7 @@ cdc:
 
 tables:
   - name: ORDERS
+    pk_column: ID       # primary key column name (default: ID)
     chunk_size: 10000   # rows per chunk (default: 10000)
 
 progress:

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"sync"
 
 	"github.com/null-ptr-exception/dblog-cdc/internal/event"
@@ -17,7 +18,7 @@ import (
 
 var ErrSkipEvent = errors.New("skip non-DML event")
 
-func ConvertPayload(p *pb.Payload, scn uint64) (event.Event, error) {
+func ConvertPayload(p *pb.Payload, scn uint64, pkCol string) (event.Event, error) {
 	switch p.Op {
 	case pb.Op_INSERT, pb.Op_UPDATE, pb.Op_DELETE:
 	default:
@@ -52,16 +53,22 @@ func ConvertPayload(p *pb.Payload, scn uint64) (event.Event, error) {
 		val := extractValue(v)
 		columns[v.Name] = val
 
-		if !pkFound {
-			if intVal, ok := v.Datum.(*pb.Value_ValueInt); ok {
-				pk = intVal.ValueInt
+		if v.Name == pkCol {
+			switch d := v.Datum.(type) {
+			case *pb.Value_ValueInt:
+				pk = d.ValueInt
 				pkFound = true
+			case *pb.Value_ValueString:
+				if n, err := strconv.ParseInt(d.ValueString, 10, 64); err == nil {
+					pk = n
+					pkFound = true
+				}
 			}
 		}
 	}
 
 	if !pkFound {
-		return event.Event{}, fmt.Errorf("no integer PK found in event for table %s", tableName)
+		return event.Event{}, fmt.Errorf("PK column %q not found or not integer in event for table %s", pkCol, tableName)
 	}
 
 	return event.Event{
@@ -91,9 +98,10 @@ func extractValue(v *pb.Value) any {
 }
 
 type Client struct {
-	addr   string
-	dbName string
-	tables map[string]bool
+	addr      string
+	dbName    string
+	tables    map[string]bool
+	pkColumns map[string]string
 
 	mu        sync.Mutex
 	lastSCN   uint64
@@ -102,7 +110,7 @@ type Client struct {
 	streaming chan struct{}
 }
 
-func NewClient(host string, port int, dbName string, tables []string) *Client {
+func NewClient(host string, port int, dbName string, tables []string, pkColumns map[string]string) *Client {
 	tableSet := make(map[string]bool, len(tables))
 	for _, t := range tables {
 		tableSet[t] = true
@@ -111,6 +119,7 @@ func NewClient(host string, port int, dbName string, tables []string) *Client {
 		addr:      fmt.Sprintf("%s:%d", host, port),
 		dbName:    dbName,
 		tables:    tableSet,
+		pkColumns: pkColumns,
 		streaming: make(chan struct{}),
 	}
 }
@@ -265,16 +274,21 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 
 		scn := resp.GetScn()
 		for _, p := range resp.Payload {
-			ev, err := ConvertPayload(p, scn)
+			tableName := ""
+			if p.Schema != nil {
+				tableName = p.Schema.Name
+			}
+			if !c.tables[tableName] {
+				continue
+			}
+
+			pkCol := c.pkColumns[tableName]
+			ev, err := ConvertPayload(p, scn, pkCol)
 			if errors.Is(err, ErrSkipEvent) {
 				continue
 			}
 			if err != nil {
 				slog.Warn("skip event", "error", err)
-				continue
-			}
-
-			if !c.tables[ev.Table] {
 				continue
 			}
 

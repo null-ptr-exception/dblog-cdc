@@ -145,7 +145,7 @@ func (e *testEnv) startReplicator(chunkSize int) *replicatorHandle {
 		e.t.Fatalf("ensure progress: %v", err)
 	}
 
-	cdcClient := olr.NewClient(getOLRHost(), getOLRPort(), "FREE", []string{"ORDERS"})
+	cdcClient := olr.NewClient(getOLRHost(), getOLRPort(), "FREE", []string{"ORDERS"}, map[string]string{"ORDERS": "ID"})
 	querier := chunk.NewOracleQuerier(e.oracleDB, "ID")
 	ybWriter := writer.NewPgWriter(e.ybPool, "ID")
 

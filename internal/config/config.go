@@ -25,12 +25,14 @@ type CDC struct {
 }
 
 type Table struct {
-	Name      string `yaml:"name"`
-	ChunkSize int    `yaml:"chunk_size"`
+	Name     string `yaml:"name"`
+	PKColumn string `yaml:"pk_column"`
+	ChunkSize int   `yaml:"chunk_size"`
 }
 
 type Defaults struct {
-	ChunkSize int `yaml:"chunk_size"`
+	ChunkSize int    `yaml:"chunk_size"`
+	PKColumn  string `yaml:"pk_column"`
 }
 
 type Progress struct {
@@ -65,12 +67,18 @@ func (c *Config) applyDefaults() {
 	if c.Defaults.ChunkSize == 0 {
 		c.Defaults.ChunkSize = 10000
 	}
+	if c.Defaults.PKColumn == "" {
+		c.Defaults.PKColumn = "ID"
+	}
 	if c.Progress.Table == "" {
 		c.Progress.Table = "dblog_progress"
 	}
 	for i := range c.Tables {
 		if c.Tables[i].ChunkSize == 0 {
 			c.Tables[i].ChunkSize = c.Defaults.ChunkSize
+		}
+		if c.Tables[i].PKColumn == "" {
+			c.Tables[i].PKColumn = c.Defaults.PKColumn
 		}
 	}
 }

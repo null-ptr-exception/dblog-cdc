@@ -22,7 +22,7 @@ func TestConvertPayload_Insert(t *testing.T) {
 		},
 	}
 
-	ev, err := olr.ConvertPayload(payload, 12345)
+	ev, err := olr.ConvertPayload(payload, 12345, "ID")
 	if err != nil {
 		t.Fatalf("ConvertPayload() error: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestConvertPayload_Update(t *testing.T) {
 		},
 	}
 
-	ev, err := olr.ConvertPayload(payload, 200)
+	ev, err := olr.ConvertPayload(payload, 200, "ID")
 	if err != nil {
 		t.Fatalf("ConvertPayload() error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestConvertPayload_Delete(t *testing.T) {
 		},
 	}
 
-	ev, err := olr.ConvertPayload(payload, 300)
+	ev, err := olr.ConvertPayload(payload, 300, "ID")
 	if err != nil {
 		t.Fatalf("ConvertPayload() error: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestConvertPayload_Delete(t *testing.T) {
 func TestConvertPayload_SkipBeginCommit(t *testing.T) {
 	for _, op := range []pb.Op{pb.Op_BEGIN, pb.Op_COMMIT, pb.Op_DDL, pb.Op_CHKPT} {
 		payload := &pb.Payload{Op: op}
-		_, err := olr.ConvertPayload(payload, 100)
+		_, err := olr.ConvertPayload(payload, 100, "ID")
 		if err != olr.ErrSkipEvent {
 			t.Errorf("Op %v should return ErrSkipEvent, got %v", op, err)
 		}

@@ -55,16 +55,18 @@ func main() {
 	}
 
 	tableNames := make([]string, len(cfg.Tables))
+	pkColumns := make(map[string]string, len(cfg.Tables))
 	for i, t := range cfg.Tables {
 		tableNames[i] = t.Name
+		pkColumns[t.Name] = t.PKColumn
 	}
 
 	for _, tbl := range cfg.Tables {
 		slog.Info("starting replication", "table", tbl.Name)
 
-		cdcClient := olr.NewClient(cfg.CDC.Host, cfg.CDC.Port, "", tableNames)
-		querier := chunk.NewOracleQuerier(oracleDB, "ID")
-		ybWriter := writer.NewPgWriter(ybPool, "ID")
+		cdcClient := olr.NewClient(cfg.CDC.Host, cfg.CDC.Port, "", tableNames, pkColumns)
+		querier := chunk.NewOracleQuerier(oracleDB, tbl.PKColumn)
+		ybWriter := writer.NewPgWriter(ybPool, tbl.PKColumn)
 
 		r := replicator.New(cdcClient, querier, ybWriter, pgStore, tbl)
 		if err := r.Run(ctx); err != nil {

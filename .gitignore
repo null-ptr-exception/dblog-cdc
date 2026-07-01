@@ -8,3 +8,6 @@ cmd/dblog/dblog
 
 # Test
 coverage.out
+
+dblog
+
