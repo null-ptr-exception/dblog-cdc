@@ -53,5 +53,22 @@ services:
       timeout: 5s
       retries: 30
 
+  test-runner:
+    build:
+      context: ..
+      dockerfile: testenv/Dockerfile.test
+    container_name: dblog-test-runner
+    environment:
+      ORACLE_DSN: "oracle://testuser:testuser@oracle:1521/FREEPDB1"
+      YB_DSN: "postgres://yugabyte:yugabyte@yugabytedb:5433/yugabyte"
+      OLR_HOST: olr
+      OLR_PORT: "5000"
+    depends_on:
+      oracle:
+        condition: service_healthy
+    profiles:
+      - test
+    command: ["go", "test", "-tags", "integration", "-v", "-timeout", "180s", "./integration/"]
+
 volumes:
   oracle-data:
