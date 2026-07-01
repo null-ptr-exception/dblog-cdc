@@ -31,7 +31,8 @@ After all chunks are loaded, the replicator switches to CDC-only mode and contin
 
 ### CDC: OpenLogReplicator
 
-- OLR must be configured with `protobuf` format and `network` writer, pointed at the source database.
+- OLR must be configured with `json` format and `network` writer, pointed at the source database.
+- Use `"timestamp": 12` for ISO8601 timestamps (PostgreSQL-compatible) and `"column": 2` for full column values on all operations.
 - OLR reads online redo logs directly — no log switches needed for real-time streaming.
 - See [testenv/olr-config.json](testenv/olr-config.json) for a working configuration.
 
@@ -118,7 +119,7 @@ Oracle ────────────────────────�
   ├── chunk reads (SELECT ... AS OF SCN) ──────────┐│
   │                                                ││
   └── redo logs ──► OpenLogReplicator ──► dblog ───┘│
-                     (protobuf/TCP)       (dedup    │
+                     (JSON/TCP)            (dedup    │
                                           + upsert)─┘
 ```
 
@@ -128,7 +129,7 @@ Key components:
 |---------|------|
 | `cmd/dblog` | CLI entry point |
 | `internal/replicator` | Main loop: chunk loading + CDC interleaving |
-| `internal/olr` | OLR protobuf client (handshake, streaming, CONFIRM) |
+| `internal/olr` | OLR client (protobuf handshake, JSON streaming, CONFIRM) |
 | `internal/chunk` | Oracle chunk querier (`AS OF SCN`) |
 | `internal/buffer` | In-memory dedup buffer (CDC vs chunk events) |
 | `internal/writer` | YugabyteDB upsert/delete writer |
