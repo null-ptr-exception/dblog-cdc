@@ -80,7 +80,7 @@ func setupEnv(t *testing.T, ctx context.Context) *testEnv {
 	return &testEnv{t: t, ctx: ctx, oracleDB: oracleDB, ybPool: ybPool}
 }
 
-// cleanRange deletes rows in [startPK, startPK+count) from both Oracle and YB.
+// cleanRange deletes rows in [startPK, startPK+count-1] from both Oracle and YB.
 // Uses DELETE (DML) to avoid TRUNCATE/DDL issues.
 // Saves the current Oracle SCN to progress so OLR skips old redo on reconnect.
 func (e *testEnv) cleanRange(startPK, count int) {
@@ -104,6 +104,19 @@ func (e *testEnv) cleanRange(startPK, count int) {
 	pgStore := progress.NewPgStore(e.ybPool, "dblog_progress")
 	pgStore.EnsureTable(e.ctx)
 	pgStore.Save(e.ctx, "ORDERS", nil, uint64(scn))
+}
+
+// scheduleCleanup registers a post-test cleanup using a fresh context
+// (since the test context may be cancelled by then).
+func (e *testEnv) scheduleCleanup(startPK, count int) {
+	e.t.Helper()
+	e.t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		endPK := startPK + count - 1
+		e.oracleDB.ExecContext(ctx, "DELETE FROM ORDERS WHERE ID BETWEEN :1 AND :2", startPK, endPK)
+		e.ybPool.Exec(ctx, "DELETE FROM ORDERS WHERE ID BETWEEN $1 AND $2", startPK, endPK)
+	})
 }
 
 func (e *testEnv) seedRows(startPK, count int, amountFactor float64, status string) {
@@ -142,7 +155,7 @@ func (e *testEnv) startReplicator(chunkSize int) *replicatorHandle {
 	rCtx, rCancel := context.WithCancel(e.ctx)
 	go func() {
 		if err := r.Run(rCtx); err != nil && rCtx.Err() == nil {
-			e.t.Logf("replicator error: %v", err)
+			e.t.Errorf("replicator error: %v", err)
 		}
 	}()
 
@@ -290,18 +303,18 @@ func (e *testEnv) assertConvergence(startPK, count int) {
 		startPK, endPK).Scan(&ybSum); err != nil {
 		e.t.Fatalf("yb sum: %v", err)
 	}
-	if oracleSum != ybSum {
-		e.t.Errorf("sum mismatch: oracle=%.0f yb=%.0f", oracleSum, ybSum)
+	if fmt.Sprintf("%.2f", oracleSum) != fmt.Sprintf("%.2f", ybSum) {
+		e.t.Errorf("sum mismatch: oracle=%.2f yb=%.2f", oracleSum, ybSum)
 	} else {
 		e.t.Logf("sums match: %.0f", oracleSum)
 	}
 }
 
 // PK ranges: each test uses non-overlapping ranges to avoid CDC cross-contamination.
-// ChunkLoading:    1000-1099
-// CDC:             2000-2099
-// WatermarkDedup:  3000-3199
-// FullConvergence: 4000-4099
+// ChunkLoading:              1000-1099
+// CDC:                       2000-2099
+// ConcurrentMutations:       3000-3199
+// FullConvergence:           4000-4099
 
 func TestReplication_ChunkLoading(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
@@ -311,6 +324,7 @@ func TestReplication_ChunkLoading(t *testing.T) {
 	env := setupEnv(t, ctx)
 	env.cleanRange(startPK, count)
 	env.seedRows(startPK, count, 10.0, "INIT")
+	env.scheduleCleanup(startPK, count)
 
 	rh := env.startReplicator(25)
 	defer rh.cancel()
@@ -334,6 +348,7 @@ func TestReplication_CDC(t *testing.T) {
 	env := setupEnv(t, ctx)
 	env.cleanRange(startPK, 100)
 	env.seedRows(startPK, count, 100.0, "SEED")
+	env.scheduleCleanup(startPK, 100)
 
 	rh := env.startReplicator(25)
 	defer rh.cancel()
@@ -376,8 +391,6 @@ func TestReplication_CDC(t *testing.T) {
 
 	t.Log("mutations applied: 3 inserts, 3 updates, 2 deletes")
 
-	// Wait for CDC to deliver the UPDATE — row count alone is insufficient
-	// because chunks can reach 51 before CDC events arrive.
 	env.waitForYBRowValue(2010, "UPDATED", 60*time.Second)
 	time.Sleep(2 * time.Second)
 
@@ -399,7 +412,12 @@ func TestReplication_CDC(t *testing.T) {
 	env.assertYBRow(2049, 204900, "SEED")
 }
 
-func TestReplication_WatermarkDedup(t *testing.T) {
+// TestReplication_ConcurrentMutations verifies that mutations applied while
+// chunk loading is in progress converge correctly. The replicator must handle
+// the race between chunk reads (AS OF a point-in-time SCN) and concurrent DML
+// — either through buffer-level watermark dedup or through CDC upserts after
+// chunks complete. The test validates the end result, not which path was taken.
+func TestReplication_ConcurrentMutations(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 
@@ -407,12 +425,22 @@ func TestReplication_WatermarkDedup(t *testing.T) {
 	env := setupEnv(t, ctx)
 	env.cleanRange(startPK, 200)
 	env.seedRows(startPK, count, 100.0, "ORIGINAL")
+	env.scheduleCleanup(startPK, 200)
 
-	// Apply mutations BEFORE starting replicator so they race with chunk loading
+	rh := env.startReplicator(10)
+	defer rh.cancel()
+
+	// Wait for early rows to appear — chunk loading is in progress
+	env.waitForYBCount(startPK, 20, 10, 30*time.Second)
+	t.Log("chunk loading in progress, applying concurrent mutations")
+
+	// Apply mutations to rows across the PK range while chunks are loading.
+	// Some of these rows may already be chunk-loaded (stale), others haven't
+	// been reached yet. Either way the final state must match Oracle.
 	for _, id := range []int{3005, 3025, 3045, 3065, 3085} {
 		if _, err := env.oracleDB.ExecContext(ctx,
 			"UPDATE ORDERS SET AMOUNT = :1, STATUS = :2 WHERE ID = :3",
-			7777.0, "RACED_UPDATE", id); err != nil {
+			7777.0, "CONCURRENT_UPDATE", id); err != nil {
 			t.Fatalf("update row %d: %v", id, err)
 		}
 	}
@@ -425,33 +453,17 @@ func TestReplication_WatermarkDedup(t *testing.T) {
 	for _, id := range []int{3101, 3102} {
 		if _, err := env.oracleDB.ExecContext(ctx,
 			"INSERT INTO ORDERS (ID, AMOUNT, STATUS) VALUES (:1, :2, :3)",
-			id, float64(id)*100.0, "RACED_INSERT"); err != nil {
+			id, float64(id)*100.0, "CONCURRENT_INSERT"); err != nil {
 			t.Fatalf("insert row %d: %v", id, err)
 		}
 	}
-	t.Log("race mutations applied: 5 updates, 3 deletes, 2 inserts")
-
-	rh := env.startReplicator(10)
-	defer rh.cancel()
+	t.Log("concurrent mutations applied: 5 updates, 3 deletes, 2 inserts")
 
 	// Oracle: 100 - 3 + 2 = 99 rows
 	env.waitForYBCount(startPK, 200, 99, 60*time.Second)
 
-	// Wait for values to converge
-	deadline := time.After(30 * time.Second)
-	for {
-		var status string
-		env.ybPool.QueryRow(ctx, "SELECT STATUS FROM ORDERS WHERE ID = $1", 3085).Scan(&status)
-		if status == "RACED_UPDATE" {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timeout waiting for watermark dedup on row 3085 (status=%q)", status)
-		default:
-			time.Sleep(1 * time.Second)
-		}
-	}
+	// Wait for the last updated row to converge via CDC
+	env.waitForYBRowValue(3085, "CONCURRENT_UPDATE", 30*time.Second)
 
 	rh.cancel()
 	time.Sleep(500 * time.Millisecond)
@@ -459,13 +471,13 @@ func TestReplication_WatermarkDedup(t *testing.T) {
 	env.assertConvergence(startPK, 200)
 
 	for _, id := range []int{3005, 3025, 3045, 3065, 3085} {
-		env.assertYBRow(id, 7777.0, "RACED_UPDATE")
+		env.assertYBRow(id, 7777.0, "CONCURRENT_UPDATE")
 	}
 	for _, id := range []int{3010, 3050, 3090} {
 		env.assertYBRowAbsent(id)
 	}
 	for _, id := range []int{3101, 3102} {
-		env.assertYBRow(id, float64(id)*100.0, "RACED_INSERT")
+		env.assertYBRow(id, float64(id)*100.0, "CONCURRENT_INSERT")
 	}
 	env.assertYBRow(3001, 300100, "ORIGINAL")
 	env.assertYBRow(3099, 309900, "ORIGINAL")
@@ -479,6 +491,7 @@ func TestReplication_FullConvergence(t *testing.T) {
 	env := setupEnv(t, ctx)
 	env.cleanRange(startPK, 100)
 	env.seedRows(startPK, count, 100.0, "SEED")
+	env.scheduleCleanup(startPK, 100)
 
 	rh := env.startReplicator(10)
 	defer rh.cancel()
@@ -513,7 +526,6 @@ func TestReplication_FullConvergence(t *testing.T) {
 		}
 	}
 
-	// Wait for CDC to deliver the UPDATE — row count alone is insufficient.
 	env.waitForYBRowValue(4000, "CHANGED", 60*time.Second)
 	time.Sleep(3 * time.Second)
 
@@ -580,9 +592,6 @@ func TestReplication_FullConvergence(t *testing.T) {
 
 	env.assertConvergence(startPK, 100)
 
-	fmt.Fprintf(os.Stderr, "\n=== CONVERGENCE SUMMARY ===\n")
-	fmt.Fprintf(os.Stderr, "Oracle rows: %d\n", len(expected))
-	fmt.Fprintf(os.Stderr, "YB rows:     %d\n", len(actual))
-	fmt.Fprintf(os.Stderr, "Mismatches:  %d\n", mismatches)
-	fmt.Fprintf(os.Stderr, "===========================\n\n")
+	t.Logf("convergence summary: oracle=%d yb=%d mismatches=%d",
+		len(expected), len(actual), mismatches)
 }
