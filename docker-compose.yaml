@@ -9,7 +9,7 @@ services:
       APP_USER: testuser
       APP_USER_PASSWORD: testuser
     volumes:
-      - ./oracle-init:/container-entrypoint-initdb.d
+      - ./testenv/oracle-init:/container-entrypoint-initdb.d
       - oracle-data:/opt/oracle/oradata
     healthcheck:
       test: ["CMD", "healthcheck.sh"]
@@ -34,7 +34,7 @@ services:
     tmpfs:
       - /olr-data:uid=1000,gid=54322
     volumes:
-      - ./olr-config.json:/config/olr-config.json:ro
+      - ./testenv/olr-config.json:/config/olr-config.json:ro
       - oracle-data:/opt/oracle/oradata:ro
 
   yugabytedb:
@@ -53,11 +53,11 @@ services:
       timeout: 5s
       retries: 30
 
-  test-runner:
+  dev:
     build:
-      context: ..
+      context: .
       dockerfile: testenv/Dockerfile.test
-    container_name: dblog-test-runner
+    container_name: dblog-dev
     environment:
       ORACLE_DSN: "oracle://testuser:testuser@oracle:1521/FREEPDB1"
       YB_DSN: "postgres://yugabyte:yugabyte@yugabytedb:5433/yugabyte"
