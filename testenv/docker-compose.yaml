@@ -3,7 +3,7 @@ services:
     image: gvenzl/oracle-free:23-slim-faststart
     container_name: dblog-oracle
     ports:
-      - "1521:1521"
+      - "11521:1521"
     environment:
       ORACLE_PASSWORD: oracle
       APP_USER: testuser
@@ -25,7 +25,7 @@ services:
     command: ["-r", "-f", "/config/olr-config.json"]
     working_dir: /olr-data
     ports:
-      - "5000:5000"
+      - "15000:5000"
     group_add:
       - "54321"
     depends_on:
@@ -38,15 +38,15 @@ services:
       - oracle-data:/opt/oracle/oradata:ro
 
   yugabytedb:
-    image: yugabytedb/yugabyte:2024.2.3.0-b1
+    image: yugabytedb/yugabyte:2025.2.4.0-b122
     container_name: dblog-yugabytedb
     command: >
       bin/yugabyted start
       --daemon=false
       --tserver_flags="ysql_num_shards_per_tserver=1"
     ports:
-      - "5433:5433"
-      - "15433:15433"
+      - "15433:5433"
+      - "25433:15433"
     healthcheck:
       test: ["CMD", "bin/yugabyted", "status"]
       interval: 10s

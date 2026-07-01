@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 
 	"github.com/null-ptr-exception/dblog-cdc/internal/event"
 )
@@ -68,6 +69,10 @@ func (o *OracleQuerier) QueryChunk(ctx context.Context, table string, afterPK in
 					pk = v
 				case float64:
 					pk = int64(v)
+				case string:
+					pk, _ = strconv.ParseInt(v, 10, 64)
+				default:
+					pk, _ = strconv.ParseInt(fmt.Sprint(v), 10, 64)
 				}
 			}
 		}

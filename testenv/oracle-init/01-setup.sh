@@ -12,11 +12,45 @@ ALTER SYSTEM SET db_recovery_file_dest_size=10G;
 ALTER SYSTEM SET log_archive_dest_1='LOCATION=/opt/oracle/oradata/FREE/archive' SCOPE=BOTH;
 HOST mkdir -p /opt/oracle/oradata/FREE/archive
 
--- Grant flashback and v$database access for dblog chunk reads
 ALTER SESSION SET CONTAINER=FREEPDB1;
+
+-- Core privileges for dblog chunk reads and OLR
+GRANT CREATE SESSION TO testuser;
 GRANT SELECT ANY TABLE TO testuser;
 GRANT FLASHBACK ANY TABLE TO testuser;
-GRANT SELECT ON SYS.V_$DATABASE TO testuser;
+GRANT SELECT ANY DICTIONARY TO testuser;
+GRANT SELECT ANY TRANSACTION TO testuser;
+GRANT SELECT_CATALOG_ROLE TO testuser;
+GRANT EXECUTE_CATALOG_ROLE TO testuser;
+GRANT LOCK ANY TABLE TO testuser;
+GRANT LOGMINING TO testuser;
+
+-- Explicit FLASHBACK on SYS dictionary base tables (required by OLR)
+GRANT SELECT, FLASHBACK ON SYS.CCOL$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.CDEF$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.COL$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.DEFERRED_STG$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.ECOL$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.LOB$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.LOBCOMPPART$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.LOBFRAG$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.OBJ$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.TAB$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.TABCOMPART$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.TABPART$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.TABSUBPART$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.TS$ TO testuser;
+GRANT SELECT, FLASHBACK ON SYS.USER$ TO testuser;
+
+-- XDB tables for OLR
+GRANT SELECT, FLASHBACK ON XDB.XDB$TTSET TO testuser;
+BEGIN
+  FOR t IN (SELECT table_name FROM dba_tables WHERE owner='XDB'
+            AND (table_name LIKE 'X$NM%' OR table_name LIKE 'X$PT%' OR table_name LIKE 'X$QN%')) LOOP
+    EXECUTE IMMEDIATE 'GRANT SELECT, FLASHBACK ON XDB.' || t.table_name || ' TO testuser';
+  END LOOP;
+END;
+/
 
 -- Create test table
 CREATE TABLE testuser.ORDERS (

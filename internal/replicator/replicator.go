@@ -2,6 +2,7 @@ package replicator
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/null-ptr-exception/dblog-cdc/internal/buffer"
@@ -81,6 +82,12 @@ func (r *Replicator) Run(ctx context.Context) error {
 
 		if !chunksComplete {
 			scnBefore := r.cdc.LastSCN()
+			if scnBefore == 0 {
+				scnBefore, err = r.chunks.CurrentSCN(ctx)
+				if err != nil {
+					return fmt.Errorf("current SCN: %w", err)
+				}
+			}
 
 			chunkResult, err := selector.Next(ctx, r.table.Name, lastPK, r.table.ChunkSize, scnBefore)
 			if err != nil {

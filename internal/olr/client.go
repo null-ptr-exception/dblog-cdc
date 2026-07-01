@@ -2,16 +2,17 @@ package olr
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"sync"
 
 	"github.com/null-ptr-exception/dblog-cdc/internal/event"
 	pb "github.com/null-ptr-exception/dblog-cdc/pb"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 var ErrSkipEvent = errors.New("skip non-DML event")
@@ -90,10 +91,9 @@ func extractValue(v *pb.Value) any {
 }
 
 type Client struct {
-	addr     string
-	dbName   string
-	conn     *grpc.ClientConn
-	tables   map[string]bool
+	addr   string
+	dbName string
+	tables map[string]bool
 
 	mu       sync.Mutex
 	lastSCN  uint64
@@ -119,43 +119,103 @@ func (c *Client) LastSCN() uint64 {
 	return c.lastSCN
 }
 
+func sendMsg(conn net.Conn, msg proto.Message) error {
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	if err := binary.Write(conn, binary.LittleEndian, uint32(len(data))); err != nil {
+		return fmt.Errorf("write length: %w", err)
+	}
+	if _, err := conn.Write(data); err != nil {
+		return fmt.Errorf("write payload: %w", err)
+	}
+	return nil
+}
+
+func recvMsg(conn net.Conn, msg proto.Message) error {
+	var length uint32
+	if err := binary.Read(conn, binary.LittleEndian, &length); err != nil {
+		return fmt.Errorf("read length: %w", err)
+	}
+	if length == 0xFFFFFFFF {
+		var bigLen uint64
+		if err := binary.Read(conn, binary.LittleEndian, &bigLen); err != nil {
+			return fmt.Errorf("read big length: %w", err)
+		}
+		length = uint32(bigLen)
+	}
+	buf := make([]byte, length)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return fmt.Errorf("read payload: %w", err)
+	}
+	return proto.Unmarshal(buf, msg)
+}
+
 func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- event.Event) error {
-	var err error
-	c.conn, err = grpc.NewClient(c.addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", c.addr)
 	if err != nil {
-		return fmt.Errorf("grpc dial: %w", err)
+		return fmt.Errorf("dial %s: %w", c.addr, err)
 	}
-	defer c.conn.Close()
+	defer conn.Close()
 
-	client := pb.NewOpenLogReplicatorClient(c.conn)
-	stream, err := client.Redo(ctx)
-	if err != nil {
-		return fmt.Errorf("start redo stream: %w", err)
-	}
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
 
-	req := &pb.RedoRequest{
+	infoReq := &pb.RedoRequest{
+		Code:         pb.RequestCode_INFO,
 		DatabaseName: c.dbName,
 	}
-	if startSCN > 0 {
-		req.Code = pb.RequestCode_CONTINUE
-		cscn := startSCN
-		cidx := uint64(0)
-		req.CScn = &cscn
-		req.CIdx = &cidx
-	} else {
-		req.Code = pb.RequestCode_START
+	if err := sendMsg(conn, infoReq); err != nil {
+		return fmt.Errorf("send info: %w", err)
 	}
 
-	if err := stream.Send(req); err != nil {
-		return fmt.Errorf("send start: %w", err)
+	infoResp := &pb.RedoResponse{}
+	if err := recvMsg(conn, infoResp); err != nil {
+		return fmt.Errorf("recv info: %w", err)
+	}
+	slog.Info("OLR info response", "code", infoResp.Code, "scn", infoResp.GetScn())
+
+	if infoResp.Code != pb.ResponseCode_REPLICATE {
+		startReq := &pb.RedoRequest{
+			DatabaseName: c.dbName,
+		}
+		if startSCN > 0 {
+			startReq.Code = pb.RequestCode_CONTINUE
+			startReq.CScn = &startSCN
+			cidx := uint64(0)
+			startReq.CIdx = &cidx
+		} else {
+			startReq.Code = pb.RequestCode_START
+			startReq.TmVal = &pb.RedoRequest_Scn{Scn: 0}
+		}
+
+		if err := sendMsg(conn, startReq); err != nil {
+			return fmt.Errorf("send start: %w", err)
+		}
+
+		startResp := &pb.RedoResponse{}
+		if err := recvMsg(conn, startResp); err != nil {
+			return fmt.Errorf("recv start: %w", err)
+		}
+		slog.Info("OLR start response", "code", startResp.Code)
+
+		if startResp.Code != pb.ResponseCode_REPLICATE {
+			return fmt.Errorf("unexpected start response: %s", startResp.Code)
+		}
+	} else {
+		slog.Info("OLR already streaming, skipping START")
 	}
 
 	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
+		resp := &pb.RedoResponse{}
+		if err := recvMsg(conn, resp); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("recv: %w", err)
 		}
 
@@ -190,17 +250,4 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 			}
 		}
 	}
-}
-
-func (c *Client) Confirm(stream pb.OpenLogReplicator_RedoClient) error {
-	c.mu.Lock()
-	cscn := c.lastCSCN
-	cidx := c.lastCIdx
-	c.mu.Unlock()
-
-	return stream.Send(&pb.RedoRequest{
-		Code: pb.RequestCode_CONFIRM,
-		CScn: &cscn,
-		CIdx: &cidx,
-	})
 }

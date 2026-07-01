@@ -1,0 +1,17 @@
+FROM golang:1.25-bookworm
+
+RUN apt-get update && apt-get install -y libaio1 unzip && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL -o /tmp/instantclient.zip \
+      https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basic-linux.x64-23.26.0.0.0.zip && \
+    unzip /tmp/instantclient.zip -d /opt && \
+    rm /tmp/instantclient.zip && \
+    ln -sf /opt/instantclient_23_26/libclntsh.so.23.1 /opt/instantclient_23_26/libclntsh.so
+
+ENV LD_LIBRARY_PATH=/opt/instantclient_23_26
+ENV ORACLE_HOME=/opt/instantclient_23_26
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
