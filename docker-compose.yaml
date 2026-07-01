@@ -54,9 +54,7 @@ services:
       retries: 30
 
   dev:
-    build:
-      context: .
-      dockerfile: testenv/Dockerfile.test
+    build: .
     container_name: dblog-dev
     environment:
       ORACLE_DSN: "oracle://testuser:testuser@oracle:1521/FREEPDB1"
@@ -66,9 +64,6 @@ services:
     depends_on:
       oracle:
         condition: service_healthy
-    profiles:
-      - test
-    command: ["go", "test", "-tags", "integration", "-v", "-timeout", "180s", "./integration/"]
 
 volumes:
   oracle-data:
