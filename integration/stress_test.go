@@ -29,7 +29,7 @@ func TestReplication_Stress(t *testing.T) {
 	roundDuration := time.Duration(envOrInt("STRESS_ROUND_SEC", 10)) * time.Second
 	numRounds := envOrInt("STRESS_ROUNDS", 3)
 	pkRange := envOrInt("STRESS_PK_RANGE", 500)
-	opDelayMs := envOrInt("STRESS_OP_DELAY_MS", 10)
+	opDelayMs := envOrInt("STRESS_OP_DELAY_MS", 1)
 
 	const startPK = 5000
 	endPK := startPK + pkRange - 1
@@ -109,9 +109,6 @@ func envOrInt(key string, fallback int) int {
 	}
 	var v int
 	fmt.Sscanf(s, "%d", &v)
-	if v <= 0 {
-		return fallback
-	}
 	return v
 }
 
@@ -132,7 +129,9 @@ func stressWorker(
 		default:
 		}
 
-		time.Sleep(opDelay)
+		if opDelay > 0 {
+			time.Sleep(opDelay)
+		}
 
 		pk := startPK + rng.Intn(pkRange)
 		amount := float64(rng.Intn(100000)) / 100.0

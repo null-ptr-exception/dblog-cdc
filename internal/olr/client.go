@@ -243,6 +243,9 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 		close(c.streaming)
 	}
 
+	var msgCount uint64
+	const confirmInterval = 1000
+
 	for {
 		resp := &pb.RedoResponse{}
 		if err := recvMsg(conn, resp); err != nil {
@@ -279,6 +282,22 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 			case events <- ev:
 			case <-ctx.Done():
 				return ctx.Err()
+			}
+		}
+
+		msgCount++
+		if msgCount%confirmInterval == 0 {
+			confirm := &pb.RedoRequest{
+				Code:         pb.RequestCode_CONFIRM,
+				DatabaseName: c.dbName,
+				CScn:         &resp.CScn,
+				CIdx:         func() *uint64 { v := resp.CIdx; return &v }(),
+			}
+			if err := sendMsg(conn, confirm); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("send confirm: %w", err)
 			}
 		}
 	}
