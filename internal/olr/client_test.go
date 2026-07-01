@@ -1,30 +1,25 @@
-package olr_test
+package olr
 
 import (
 	"testing"
 
 	"github.com/null-ptr-exception/dblog-cdc/internal/event"
-	"github.com/null-ptr-exception/dblog-cdc/internal/olr"
-	pb "github.com/null-ptr-exception/dblog-cdc/pb"
 )
 
-func TestConvertPayload_Insert(t *testing.T) {
-	payload := &pb.Payload{
-		Op: pb.Op_INSERT,
-		Schema: &pb.Schema{
-			Owner: "TEST",
-			Name:  "ORDERS",
-		},
-		After: []*pb.Value{
-			{Name: "ID", Datum: &pb.Value_ValueInt{ValueInt: 42}},
-			{Name: "AMOUNT", Datum: &pb.Value_ValueDouble{ValueDouble: 99.95}},
-			{Name: "STATUS", Datum: &pb.Value_ValueString{ValueString: "NEW"}},
+func TestConvertJSONPayload_Insert(t *testing.T) {
+	p := jsonPayload{
+		Op:     "c",
+		Schema: jsonSchema{Owner: "TEST", Table: "ORDERS"},
+		After: map[string]any{
+			"ID":     float64(42),
+			"AMOUNT": float64(99.95),
+			"STATUS": "NEW",
 		},
 	}
 
-	ev, err := olr.ConvertPayload(payload, 12345, "ID")
+	ev, err := convertJSONPayload(p, 12345, "ID")
 	if err != nil {
-		t.Fatalf("ConvertPayload() error: %v", err)
+		t.Fatalf("convertJSONPayload() error: %v", err)
 	}
 	if ev.Table != "ORDERS" {
 		t.Errorf("Table = %q", ev.Table)
@@ -38,24 +33,24 @@ func TestConvertPayload_Insert(t *testing.T) {
 	if ev.PK != 42 {
 		t.Errorf("PK = %d", ev.PK)
 	}
-	if ev.Columns["AMOUNT"] != 99.95 {
+	if ev.Columns["AMOUNT"] != float64(99.95) {
 		t.Errorf("AMOUNT = %v", ev.Columns["AMOUNT"])
 	}
 }
 
-func TestConvertPayload_Update(t *testing.T) {
-	payload := &pb.Payload{
-		Op:     pb.Op_UPDATE,
-		Schema: &pb.Schema{Name: "ORDERS"},
-		After: []*pb.Value{
-			{Name: "ID", Datum: &pb.Value_ValueInt{ValueInt: 7}},
-			{Name: "STATUS", Datum: &pb.Value_ValueString{ValueString: "SHIPPED"}},
+func TestConvertJSONPayload_Update(t *testing.T) {
+	p := jsonPayload{
+		Op:     "u",
+		Schema: jsonSchema{Table: "ORDERS"},
+		After: map[string]any{
+			"ID":     float64(7),
+			"STATUS": "SHIPPED",
 		},
 	}
 
-	ev, err := olr.ConvertPayload(payload, 200, "ID")
+	ev, err := convertJSONPayload(p, 200, "ID")
 	if err != nil {
-		t.Fatalf("ConvertPayload() error: %v", err)
+		t.Fatalf("convertJSONPayload() error: %v", err)
 	}
 	if ev.Op != event.OpUpdate {
 		t.Errorf("Op = %v", ev.Op)
@@ -65,18 +60,18 @@ func TestConvertPayload_Update(t *testing.T) {
 	}
 }
 
-func TestConvertPayload_Delete(t *testing.T) {
-	payload := &pb.Payload{
-		Op:     pb.Op_DELETE,
-		Schema: &pb.Schema{Name: "ORDERS"},
-		Before: []*pb.Value{
-			{Name: "ID", Datum: &pb.Value_ValueInt{ValueInt: 3}},
+func TestConvertJSONPayload_Delete(t *testing.T) {
+	p := jsonPayload{
+		Op:     "d",
+		Schema: jsonSchema{Table: "ORDERS"},
+		Before: map[string]any{
+			"ID": float64(3),
 		},
 	}
 
-	ev, err := olr.ConvertPayload(payload, 300, "ID")
+	ev, err := convertJSONPayload(p, 300, "ID")
 	if err != nil {
-		t.Fatalf("ConvertPayload() error: %v", err)
+		t.Fatalf("convertJSONPayload() error: %v", err)
 	}
 	if ev.Op != event.OpDelete {
 		t.Errorf("Op = %v", ev.Op)
@@ -86,12 +81,50 @@ func TestConvertPayload_Delete(t *testing.T) {
 	}
 }
 
-func TestConvertPayload_SkipBeginCommit(t *testing.T) {
-	for _, op := range []pb.Op{pb.Op_BEGIN, pb.Op_COMMIT, pb.Op_DDL, pb.Op_CHKPT} {
-		payload := &pb.Payload{Op: op}
-		_, err := olr.ConvertPayload(payload, 100, "ID")
-		if err != olr.ErrSkipEvent {
-			t.Errorf("Op %v should return ErrSkipEvent, got %v", op, err)
+func TestConvertJSONPayload_SkipNonDML(t *testing.T) {
+	for _, op := range []string{"begin", "commit", "ddl", "chkpt"} {
+		p := jsonPayload{Op: op}
+		_, err := convertJSONPayload(p, 100, "ID")
+		if err != ErrSkipEvent {
+			t.Errorf("Op %q should return ErrSkipEvent, got %v", op, err)
 		}
+	}
+}
+
+func TestConvertJSONPayload_StringPK(t *testing.T) {
+	p := jsonPayload{
+		Op:     "c",
+		Schema: jsonSchema{Table: "BIG_TABLE"},
+		After: map[string]any{
+			"ID": "12345678901234567",
+			"V":  "test",
+		},
+	}
+
+	ev, err := convertJSONPayload(p, 100, "ID")
+	if err != nil {
+		t.Fatalf("convertJSONPayload() error: %v", err)
+	}
+	if ev.PK != 12345678901234567 {
+		t.Errorf("PK = %d, want 12345678901234567", ev.PK)
+	}
+}
+
+func TestConvertJSONPayload_NullColumn(t *testing.T) {
+	p := jsonPayload{
+		Op:     "c",
+		Schema: jsonSchema{Table: "ORDERS"},
+		After: map[string]any{
+			"ID":     float64(1),
+			"STATUS": nil,
+		},
+	}
+
+	ev, err := convertJSONPayload(p, 100, "ID")
+	if err != nil {
+		t.Fatalf("convertJSONPayload() error: %v", err)
+	}
+	if ev.Columns["STATUS"] != nil {
+		t.Errorf("STATUS = %v, want nil", ev.Columns["STATUS"])
 	}
 }

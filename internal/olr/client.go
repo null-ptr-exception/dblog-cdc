@@ -3,6 +3,7 @@ package olr
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,83 +19,80 @@ import (
 
 var ErrSkipEvent = errors.New("skip non-DML event")
 
-func ConvertPayload(p *pb.Payload, scn uint64, pkCol string) (event.Event, error) {
+// jsonMessage is the top-level JSON message from OLR after handshake.
+type jsonMessage struct {
+	SCN     uint64        `json:"scn"`
+	CSCN    uint64        `json:"c_scn"`
+	CIdx    uint64        `json:"c_idx"`
+	Payload []jsonPayload `json:"payload"`
+}
+
+type jsonPayload struct {
+	Op     string            `json:"op"`
+	Schema jsonSchema        `json:"schema"`
+	Before map[string]any    `json:"before"`
+	After  map[string]any    `json:"after"`
+}
+
+type jsonSchema struct {
+	Owner string `json:"owner"`
+	Table string `json:"table"`
+}
+
+func convertJSONPayload(p jsonPayload, scn uint64, pkCol string) (event.Event, error) {
+	var op event.OpType
 	switch p.Op {
-	case pb.Op_INSERT, pb.Op_UPDATE, pb.Op_DELETE:
+	case "c":
+		op = event.OpInsert
+	case "u":
+		op = event.OpUpdate
+	case "d":
+		op = event.OpDelete
 	default:
 		return event.Event{}, ErrSkipEvent
 	}
 
-	var op event.OpType
-	switch p.Op {
-	case pb.Op_INSERT:
-		op = event.OpInsert
-	case pb.Op_UPDATE:
-		op = event.OpUpdate
-	case pb.Op_DELETE:
-		op = event.OpDelete
-	}
-
-	tableName := ""
-	if p.Schema != nil {
-		tableName = p.Schema.Name
-	}
-
-	values := p.After
+	columns := p.After
 	if op == event.OpDelete {
-		values = p.Before
+		columns = p.Before
+	}
+	if columns == nil {
+		return event.Event{}, fmt.Errorf("no column data in %s event for table %s", p.Op, p.Schema.Table)
 	}
 
 	var pk int64
 	var pkFound bool
-	columns := make(map[string]any)
 
-	for _, v := range values {
-		val := extractValue(v)
-		columns[v.Name] = val
-
-		if v.Name == pkCol {
-			switch d := v.Datum.(type) {
-			case *pb.Value_ValueInt:
-				pk = d.ValueInt
+	pkVal, ok := columns[pkCol]
+	if ok && pkVal != nil {
+		switch v := pkVal.(type) {
+		case float64:
+			pk = int64(v)
+			pkFound = true
+		case string:
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				pk = n
 				pkFound = true
-			case *pb.Value_ValueString:
-				if n, err := strconv.ParseInt(d.ValueString, 10, 64); err == nil {
-					pk = n
-					pkFound = true
-				}
+			}
+		case json.Number:
+			if n, err := v.Int64(); err == nil {
+				pk = n
+				pkFound = true
 			}
 		}
 	}
 
 	if !pkFound {
-		return event.Event{}, fmt.Errorf("PK column %q not found or not integer in event for table %s", pkCol, tableName)
+		return event.Event{}, fmt.Errorf("PK column %q not found or not integer in event for table %s", pkCol, p.Schema.Table)
 	}
 
 	return event.Event{
-		Table:   tableName,
+		Table:   p.Schema.Table,
 		Op:      op,
 		SCN:     scn,
 		PK:      pk,
 		Columns: columns,
 	}, nil
-}
-
-func extractValue(v *pb.Value) any {
-	switch d := v.Datum.(type) {
-	case *pb.Value_ValueInt:
-		return d.ValueInt
-	case *pb.Value_ValueFloat:
-		return d.ValueFloat
-	case *pb.Value_ValueDouble:
-		return d.ValueDouble
-	case *pb.Value_ValueString:
-		return d.ValueString
-	case *pb.Value_ValueBytes:
-		return d.ValueBytes
-	default:
-		return nil
-	}
 }
 
 type Client struct {
@@ -153,23 +151,31 @@ func sendMsg(conn net.Conn, msg proto.Message) error {
 	return nil
 }
 
-func recvMsg(conn net.Conn, msg proto.Message) error {
+func recvProto(conn net.Conn, msg proto.Message) error {
+	buf, err := recvRaw(conn)
+	if err != nil {
+		return err
+	}
+	return proto.Unmarshal(buf, msg)
+}
+
+func recvRaw(conn net.Conn) ([]byte, error) {
 	var length uint32
 	if err := binary.Read(conn, binary.LittleEndian, &length); err != nil {
-		return fmt.Errorf("read length: %w", err)
+		return nil, fmt.Errorf("read length: %w", err)
 	}
 	if length == 0xFFFFFFFF {
 		var bigLen uint64
 		if err := binary.Read(conn, binary.LittleEndian, &bigLen); err != nil {
-			return fmt.Errorf("read big length: %w", err)
+			return nil, fmt.Errorf("read big length: %w", err)
 		}
 		length = uint32(bigLen)
 	}
 	buf := make([]byte, length)
 	if _, err := io.ReadFull(conn, buf); err != nil {
-		return fmt.Errorf("read payload: %w", err)
+		return nil, fmt.Errorf("read payload: %w", err)
 	}
-	return proto.Unmarshal(buf, msg)
+	return buf, nil
 }
 
 func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- event.Event) error {
@@ -185,6 +191,7 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 		conn.Close()
 	}()
 
+	// Handshake is always protobuf
 	infoReq := &pb.RedoRequest{
 		Code:         pb.RequestCode_INFO,
 		DatabaseName: c.dbName,
@@ -194,7 +201,7 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 	}
 
 	infoResp := &pb.RedoResponse{}
-	if err := recvMsg(conn, infoResp); err != nil {
+	if err := recvProto(conn, infoResp); err != nil {
 		return fmt.Errorf("recv info: %w", err)
 	}
 	slog.Info("OLR info response", "code", infoResp.Code, "scn", infoResp.GetScn())
@@ -214,19 +221,14 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 			CIdx:         func() *uint64 { v := uint64(0); return &v }(),
 		}
 	case pb.ResponseCode_READY:
+		startFrom := uint64(0xFFFFFFFFFFFFFFFF)
 		if startSCN > 0 {
-			req = &pb.RedoRequest{
-				Code:         pb.RequestCode_CONTINUE,
-				DatabaseName: c.dbName,
-				CScn:         &startSCN,
-				CIdx:         func() *uint64 { v := uint64(0); return &v }(),
-			}
-		} else {
-			req = &pb.RedoRequest{
-				Code:         pb.RequestCode_START,
-				DatabaseName: c.dbName,
-				TmVal:        &pb.RedoRequest_Scn{Scn: 0xFFFFFFFFFFFFFFFF},
-			}
+			startFrom = startSCN
+		}
+		req = &pb.RedoRequest{
+			Code:         pb.RequestCode_START,
+			DatabaseName: c.dbName,
+			TmVal:        &pb.RedoRequest_Scn{Scn: startFrom},
 		}
 	default:
 		return fmt.Errorf("unexpected info response: %s", infoResp.Code)
@@ -237,7 +239,7 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 	}
 
 	startResp := &pb.RedoResponse{}
-	if err := recvMsg(conn, startResp); err != nil {
+	if err := recvProto(conn, startResp); err != nil {
 		return fmt.Errorf("recv %s response: %w", req.Code, err)
 	}
 	slog.Info("OLR handshake complete", "sent", req.Code, "response", startResp.Code)
@@ -252,38 +254,40 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 		close(c.streaming)
 	}
 
+	// Data messages are JSON
 	var msgCount uint64
 	const confirmInterval = 1000
 
 	for {
-		resp := &pb.RedoResponse{}
-		if err := recvMsg(conn, resp); err != nil {
+		raw, err := recvRaw(conn)
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return fmt.Errorf("recv: %w", err)
 		}
 
-		c.mu.Lock()
-		if scn := resp.GetScn(); scn > 0 {
-			c.lastSCN = scn
+		var msg jsonMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			slog.Warn("skip malformed JSON message", "error", err)
+			continue
 		}
-		c.lastCSCN = resp.CScn
-		c.lastCIdx = resp.CIdx
+
+		c.mu.Lock()
+		if msg.SCN > 0 {
+			c.lastSCN = msg.SCN
+		}
+		c.lastCSCN = msg.CSCN
+		c.lastCIdx = msg.CIdx
 		c.mu.Unlock()
 
-		scn := resp.GetScn()
-		for _, p := range resp.Payload {
-			tableName := ""
-			if p.Schema != nil {
-				tableName = p.Schema.Name
-			}
-			if !c.tables[tableName] {
+		for _, p := range msg.Payload {
+			if !c.tables[p.Schema.Table] {
 				continue
 			}
 
-			pkCol := c.pkColumns[tableName]
-			ev, err := ConvertPayload(p, scn, pkCol)
+			pkCol := c.pkColumns[p.Schema.Table]
+			ev, err := convertJSONPayload(p, msg.SCN, pkCol)
 			if errors.Is(err, ErrSkipEvent) {
 				continue
 			}
@@ -299,13 +303,14 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 			}
 		}
 
+		// CONFIRM is still protobuf
 		msgCount++
 		if msgCount%confirmInterval == 0 {
 			confirm := &pb.RedoRequest{
 				Code:         pb.RequestCode_CONFIRM,
 				DatabaseName: c.dbName,
-				CScn:         &resp.CScn,
-				CIdx:         func() *uint64 { v := resp.CIdx; return &v }(),
+				CScn:         &msg.CSCN,
+				CIdx:         func() *uint64 { v := msg.CIdx; return &v }(),
 			}
 			if err := sendMsg(conn, confirm); err != nil {
 				if ctx.Err() != nil {

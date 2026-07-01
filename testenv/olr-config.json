@@ -15,8 +15,11 @@
         "server": "//oracle:1521/FREEPDB1"
       },
       "format": {
-        "type": "protobuf",
-        "scn-type": 4
+        "type": "json",
+        "scn-type": 6,
+        "timestamp": 12,
+        "column": 2,
+        "flush-buffer": 0
       },
       "filter": {
         "table": [
