@@ -15,4 +15,5 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-CMD ["sleep", "infinity"]
+RUN go build -o /usr/local/bin/dblog-cdc ./cmd/dblog
+CMD ["dblog-cdc"]
