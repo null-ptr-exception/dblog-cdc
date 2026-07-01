@@ -57,6 +57,8 @@ services:
     build: .
     container_name: dblog-dev
     command: ["sleep", "infinity"]
+    volumes:
+      - .:/app
     environment:
       ORACLE_DSN: "oracle://testuser:testuser@oracle:1521/FREEPDB1"
       YB_DSN: "postgres://yugabyte:yugabyte@yugabytedb:5433/yugabyte"

@@ -80,13 +80,19 @@ func (r *Replicator) Run(ctx context.Context) error {
 			}
 		}
 
-		if !chunksComplete {
-			scnBefore := r.cdc.LastSCN()
-			if scnBefore == 0 {
-				scnBefore, err = r.chunks.CurrentSCN(ctx)
-				if err != nil {
-					return fmt.Errorf("current SCN: %w", err)
+		if chunksComplete {
+			events := buf.Drain()
+			if len(events) > 0 {
+				if err := r.writer.WriteBatch(ctx, events); err != nil {
+					return err
 				}
+			}
+		}
+
+		if !chunksComplete {
+			scnBefore, err := r.chunks.CurrentSCN(ctx)
+			if err != nil {
+				return fmt.Errorf("current SCN: %w", err)
 			}
 
 			chunkResult, err := selector.Next(ctx, r.table.Name, lastPK, r.table.ChunkSize, scnBefore)

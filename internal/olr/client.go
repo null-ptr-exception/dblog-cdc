@@ -95,10 +95,11 @@ type Client struct {
 	dbName string
 	tables map[string]bool
 
-	mu       sync.Mutex
-	lastSCN  uint64
-	lastCSCN uint64
-	lastCIdx uint64
+	mu        sync.Mutex
+	lastSCN   uint64
+	lastCSCN  uint64
+	lastCIdx  uint64
+	streaming chan struct{}
 }
 
 func NewClient(host string, port int, dbName string, tables []string) *Client {
@@ -107,9 +108,10 @@ func NewClient(host string, port int, dbName string, tables []string) *Client {
 		tableSet[t] = true
 	}
 	return &Client{
-		addr:   fmt.Sprintf("%s:%d", host, port),
-		dbName: dbName,
-		tables: tableSet,
+		addr:      fmt.Sprintf("%s:%d", host, port),
+		dbName:    dbName,
+		tables:    tableSet,
+		streaming: make(chan struct{}),
 	}
 }
 
@@ -117,6 +119,15 @@ func (c *Client) LastSCN() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.lastSCN
+}
+
+func (c *Client) WaitStreaming(ctx context.Context) error {
+	select {
+	case <-c.streaming:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func sendMsg(conn net.Conn, msg proto.Message) error {
@@ -179,35 +190,57 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 	}
 	slog.Info("OLR info response", "code", infoResp.Code, "scn", infoResp.GetScn())
 
-	if infoResp.Code != pb.ResponseCode_REPLICATE {
-		startReq := &pb.RedoRequest{
+	resumeSCN := startSCN
+	if resumeSCN == 0 && infoResp.GetScn() > 0 {
+		resumeSCN = infoResp.GetScn()
+	}
+
+	var req *pb.RedoRequest
+	switch infoResp.Code {
+	case pb.ResponseCode_REPLICATE:
+		req = &pb.RedoRequest{
+			Code:         pb.RequestCode_CONTINUE,
 			DatabaseName: c.dbName,
+			CScn:         &resumeSCN,
+			CIdx:         func() *uint64 { v := uint64(0); return &v }(),
 		}
+	case pb.ResponseCode_READY:
 		if startSCN > 0 {
-			startReq.Code = pb.RequestCode_CONTINUE
-			startReq.CScn = &startSCN
-			cidx := uint64(0)
-			startReq.CIdx = &cidx
+			req = &pb.RedoRequest{
+				Code:         pb.RequestCode_CONTINUE,
+				DatabaseName: c.dbName,
+				CScn:         &startSCN,
+				CIdx:         func() *uint64 { v := uint64(0); return &v }(),
+			}
 		} else {
-			startReq.Code = pb.RequestCode_START
-			startReq.TmVal = &pb.RedoRequest_Scn{Scn: 0}
+			req = &pb.RedoRequest{
+				Code:         pb.RequestCode_START,
+				DatabaseName: c.dbName,
+				TmVal:        &pb.RedoRequest_Scn{Scn: 0xFFFFFFFFFFFFFFFF},
+			}
 		}
+	default:
+		return fmt.Errorf("unexpected info response: %s", infoResp.Code)
+	}
 
-		if err := sendMsg(conn, startReq); err != nil {
-			return fmt.Errorf("send start: %w", err)
-		}
+	if err := sendMsg(conn, req); err != nil {
+		return fmt.Errorf("send %s: %w", req.Code, err)
+	}
 
-		startResp := &pb.RedoResponse{}
-		if err := recvMsg(conn, startResp); err != nil {
-			return fmt.Errorf("recv start: %w", err)
-		}
-		slog.Info("OLR start response", "code", startResp.Code)
+	startResp := &pb.RedoResponse{}
+	if err := recvMsg(conn, startResp); err != nil {
+		return fmt.Errorf("recv %s response: %w", req.Code, err)
+	}
+	slog.Info("OLR handshake complete", "sent", req.Code, "response", startResp.Code)
 
-		if startResp.Code != pb.ResponseCode_REPLICATE {
-			return fmt.Errorf("unexpected start response: %s", startResp.Code)
-		}
-	} else {
-		slog.Info("OLR already streaming, skipping START")
+	if startResp.Code != pb.ResponseCode_REPLICATE {
+		return fmt.Errorf("unexpected response to %s: %s", req.Code, startResp.Code)
+	}
+
+	select {
+	case <-c.streaming:
+	default:
+		close(c.streaming)
 	}
 
 	for {
@@ -228,7 +261,6 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 		c.mu.Unlock()
 
 		scn := resp.GetScn()
-
 		for _, p := range resp.Payload {
 			ev, err := ConvertPayload(p, scn)
 			if errors.Is(err, ErrSkipEvent) {

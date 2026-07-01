@@ -10,7 +10,7 @@ test-unit: ## Run unit tests inside dev container
 	docker compose exec dev go test ./internal/... -v -count=1
 
 test-e2e: ## Run integration tests inside dev container
-	docker compose exec dev go test ./integration/... -v -count=1 -timeout=180s -tags=integration
+	docker compose exec dev go test ./integration/... -v -count=1 -timeout=600s -tags=integration
 
 proto: ## Generate protobuf Go code
 	mkdir -p pb

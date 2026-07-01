@@ -61,4 +61,8 @@ CREATE TABLE testuser.ORDERS (
 
 -- Enable supplemental logging on the test table
 ALTER TABLE testuser.ORDERS ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
+
+-- Switch redo log so OLR starts with a nearly-empty log file
+ALTER SESSION SET CONTAINER=CDB$ROOT;
+ALTER SYSTEM SWITCH LOGFILE;
 SQL
