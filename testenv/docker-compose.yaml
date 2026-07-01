@@ -1,0 +1,57 @@
+services:
+  oracle:
+    image: gvenzl/oracle-free:23-slim-faststart
+    container_name: dblog-oracle
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: oracle
+      APP_USER: testuser
+      APP_USER_PASSWORD: testuser
+    volumes:
+      - ./oracle-init:/container-entrypoint-initdb.d
+      - oracle-data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  olr:
+    image: ghcr.io/rophy/openlogreplicator:v1.9.0.1
+    container_name: dblog-olr
+    user: "1000:1000"
+    entrypoint: ["/bin/bash", "-c", "mkdir -p /olr-data/checkpoint && exec /opt/OpenLogReplicator/OpenLogReplicator \"$@\"", "--"]
+    command: ["-r", "-f", "/config/olr-config.json"]
+    working_dir: /olr-data
+    ports:
+      - "5000:5000"
+    group_add:
+      - "54321"
+    depends_on:
+      oracle:
+        condition: service_healthy
+    tmpfs:
+      - /olr-data:uid=1000,gid=54322
+    volumes:
+      - ./olr-config.json:/config/olr-config.json:ro
+      - oracle-data:/opt/oracle/oradata:ro
+
+  yugabytedb:
+    image: yugabytedb/yugabyte:2024.2.3.0-b1
+    container_name: dblog-yugabytedb
+    command: >
+      bin/yugabyted start
+      --daemon=false
+      --tserver_flags="ysql_num_shards_per_tserver=1"
+    ports:
+      - "5433:5433"
+      - "15433:15433"
+    healthcheck:
+      test: ["CMD", "bin/yugabyted", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  oracle-data:

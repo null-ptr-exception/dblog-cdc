@@ -1,0 +1,23 @@
+source:
+  type: oracle
+  dsn: "oracle://testuser:testuser@localhost:1521/FREEPDB1"
+
+target:
+  type: yugabytedb
+  dsn: "postgres://yugabyte:yugabyte@localhost:5433/yugabyte"
+
+cdc:
+  host: "localhost"
+  port: 5000
+  scn_type: 4
+  format: protobuf
+
+tables:
+  - name: "ORDERS"
+    chunk_size: 1000
+
+defaults:
+  chunk_size: 10000
+
+progress:
+  table: "dblog_progress"

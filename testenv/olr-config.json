@@ -1,0 +1,38 @@
+{
+  "version": "1.9.0",
+  "memory": {
+    "min-mb": 64,
+    "max-mb": 256
+  },
+  "source": [
+    {
+      "alias": "SOURCE",
+      "name": "FREE",
+      "reader": {
+        "type": "online",
+        "user": "testuser",
+        "password": "testuser",
+        "server": "//oracle:1521/FREEPDB1"
+      },
+      "format": {
+        "type": "protobuf",
+        "scn-type": 4
+      },
+      "filter": {
+        "table": [
+          {"owner": "TESTUSER", "table": "ORDERS"}
+        ]
+      }
+    }
+  ],
+  "target": [
+    {
+      "alias": "NETWORK",
+      "source": "SOURCE",
+      "writer": {
+        "type": "network",
+        "uri": "0.0.0.0:5000"
+      }
+    }
+  ]
+}
