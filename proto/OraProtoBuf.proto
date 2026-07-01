@@ -34,10 +34,6 @@ enum ColumnType {
     TIMESTAMP_WITH_LOCAL_TZ = 17;
 }
 
-service OpenLogReplicator {
-    rpc Redo(stream RedoRequest) returns (stream RedoResponse);
-}
-
 enum RequestCode {
     INFO = 0;
     START = 1;
