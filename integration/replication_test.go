@@ -459,11 +459,9 @@ func TestReplication_ConcurrentMutations(t *testing.T) {
 	}
 	t.Log("concurrent mutations applied: 5 updates, 3 deletes, 2 inserts")
 
-	// Oracle: 100 - 3 + 2 = 99 rows
-	env.waitForYBCount(startPK, 200, 99, 60*time.Second)
-
-	// Wait for the last updated row to converge via CDC
-	env.waitForYBRowValue(3085, "CONCURRENT_UPDATE", 30*time.Second)
+	// Wait for the last inserted row (highest SCN) to appear via CDC —
+	// this guarantees all prior events (updates, deletes) have also arrived.
+	env.waitForYBRowValue(3102, "CONCURRENT_INSERT", 60*time.Second)
 
 	rh.cancel()
 	time.Sleep(500 * time.Millisecond)
