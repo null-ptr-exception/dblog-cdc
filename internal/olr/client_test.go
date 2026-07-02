@@ -30,8 +30,8 @@ func TestConvertJSONPayload_Insert(t *testing.T) {
 	if ev.SCN != 12345 {
 		t.Errorf("SCN = %d", ev.SCN)
 	}
-	if ev.PK != 42 {
-		t.Errorf("PK = %d", ev.PK)
+	if ev.PK != "42" {
+		t.Errorf("PK = %s", ev.PK)
 	}
 	if ev.Columns["AMOUNT"] != float64(99.95) {
 		t.Errorf("AMOUNT = %v", ev.Columns["AMOUNT"])
@@ -55,8 +55,8 @@ func TestConvertJSONPayload_Update(t *testing.T) {
 	if ev.Op != event.OpUpdate {
 		t.Errorf("Op = %v", ev.Op)
 	}
-	if ev.PK != 7 {
-		t.Errorf("PK = %d", ev.PK)
+	if ev.PK != "7" {
+		t.Errorf("PK = %s", ev.PK)
 	}
 }
 
@@ -76,8 +76,8 @@ func TestConvertJSONPayload_Delete(t *testing.T) {
 	if ev.Op != event.OpDelete {
 		t.Errorf("Op = %v", ev.Op)
 	}
-	if ev.PK != 3 {
-		t.Errorf("PK = %d", ev.PK)
+	if ev.PK != "3" {
+		t.Errorf("PK = %s", ev.PK)
 	}
 }
 
@@ -105,8 +105,8 @@ func TestConvertJSONPayload_StringPK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convertJSONPayload() error: %v", err)
 	}
-	if ev.PK != 12345678901234567 {
-		t.Errorf("PK = %d, want 12345678901234567", ev.PK)
+	if ev.PK != "12345678901234567" {
+		t.Errorf("PK = %s, want 12345678901234567", ev.PK)
 	}
 }
 

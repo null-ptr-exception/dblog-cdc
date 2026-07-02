@@ -57,7 +57,7 @@ func BuildUpsertSQL(table, pkCol string, e event.Event) (string, []any) {
 	return sql, args
 }
 
-func BuildDeleteSQL(table, pkCol string, pk int64) (string, []any) {
+func BuildDeleteSQL(table, pkCol string, pk any) (string, []any) {
 	return fmt.Sprintf("DELETE FROM %s WHERE %s = $1", table, pkCol), []any{pk}
 }
 
@@ -73,7 +73,7 @@ func (w *Writer) WriteBatch(ctx context.Context, events []event.Event) error {
 		}
 
 		if err := w.db.ExecContext(ctx, sql, args...); err != nil {
-			return fmt.Errorf("write %s PK=%d: %w", e.Table, e.PK, err)
+			return fmt.Errorf("write %s PK=%v: %w", e.Table, e.PK, err)
 		}
 	}
 	return nil

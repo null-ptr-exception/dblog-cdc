@@ -12,6 +12,8 @@ import (
 	"github.com/null-ptr-exception/dblog-cdc/internal/progress"
 )
 
+const chunksCompleteMarker = "__COMPLETE__"
+
 type CDCSource interface {
 	Stream(ctx context.Context, startSCN uint64, events chan<- event.Event) error
 	LastSCN() uint64
@@ -45,10 +47,10 @@ func (r *Replicator) Run(ctx context.Context) error {
 		return err
 	}
 
-	var lastPK int64
+	var lastPK string
 	chunksComplete := false
 	if state.LastPK != nil {
-		if *state.LastPK == -1 {
+		if *state.LastPK == chunksCompleteMarker {
 			chunksComplete = true
 		} else {
 			lastPK = *state.LastPK
@@ -122,7 +124,7 @@ func (r *Replicator) Run(ctx context.Context) error {
 			lastPK = chunkResult.LastPK
 			pk := lastPK
 			if chunkResult.Complete {
-				pk = -1
+				pk = chunksCompleteMarker
 				chunksComplete = true
 			}
 			if err := r.store.Save(ctx, r.table.Name, &pk, scnBefore); err != nil {

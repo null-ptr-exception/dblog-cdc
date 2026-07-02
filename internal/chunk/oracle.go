@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strconv"
 
 	"github.com/null-ptr-exception/dblog-cdc/internal/event"
 )
@@ -24,7 +23,7 @@ func (o *OracleQuerier) CurrentSCN(ctx context.Context) (uint64, error) {
 	return scn, err
 }
 
-func (o *OracleQuerier) QueryChunk(ctx context.Context, table string, afterPK int64, limit int, scn uint64) (*event.ChunkResult, error) {
+func (o *OracleQuerier) QueryChunk(ctx context.Context, table string, afterPK string, limit int, scn uint64) (*event.ChunkResult, error) {
 	query := fmt.Sprintf(
 		"SELECT * FROM %s AS OF SCN %d WHERE %s > :1 ORDER BY %s ASC FETCH FIRST :2 ROWS ONLY",
 		table, scn, o.pkCol, o.pkCol,
@@ -44,7 +43,7 @@ func (o *OracleQuerier) QueryChunk(ctx context.Context, table string, afterPK in
 	result := &event.ChunkResult{
 		Table: table,
 		SCN:   scn,
-		Rows:  make(map[int64]map[string]any),
+		Rows:  make(map[string]map[string]any),
 	}
 
 	count := 0
@@ -60,20 +59,11 @@ func (o *OracleQuerier) QueryChunk(ctx context.Context, table string, afterPK in
 		}
 
 		rowMap := make(map[string]any, len(cols))
-		var pk int64
+		var pk string
 		for i, col := range cols {
 			rowMap[col] = values[i]
 			if col == o.pkCol {
-				switch v := values[i].(type) {
-				case int64:
-					pk = v
-				case float64:
-					pk = int64(v)
-				case string:
-					pk, _ = strconv.ParseInt(v, 10, 64)
-				default:
-					pk, _ = strconv.ParseInt(fmt.Sprint(v), 10, 64)
-				}
+				pk = fmt.Sprint(values[i])
 			}
 		}
 

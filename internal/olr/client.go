@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"strconv"
 	"sync"
 
 	"github.com/null-ptr-exception/dblog-cdc/internal/event"
@@ -60,31 +59,11 @@ func convertJSONPayload(p jsonPayload, scn uint64, pkCol string) (event.Event, e
 		return event.Event{}, fmt.Errorf("no column data in %s event for table %s", p.Op, p.Schema.Table)
 	}
 
-	var pk int64
-	var pkFound bool
-
 	pkVal, ok := columns[pkCol]
-	if ok && pkVal != nil {
-		switch v := pkVal.(type) {
-		case float64:
-			pk = int64(v)
-			pkFound = true
-		case string:
-			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-				pk = n
-				pkFound = true
-			}
-		case json.Number:
-			if n, err := v.Int64(); err == nil {
-				pk = n
-				pkFound = true
-			}
-		}
+	if !ok || pkVal == nil {
+		return event.Event{}, fmt.Errorf("PK column %q not found in event for table %s", pkCol, p.Schema.Table)
 	}
-
-	if !pkFound {
-		return event.Event{}, fmt.Errorf("PK column %q not found or not integer in event for table %s", pkCol, p.Schema.Table)
-	}
+	pk := fmt.Sprint(pkVal)
 
 	return event.Event{
 		Table:   p.Schema.Table,

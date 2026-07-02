@@ -17,7 +17,7 @@ After all chunks are loaded, the replicator switches to CDC-only mode and contin
 
 ### Source: Oracle
 
-- Table must have an **integer primary key** column (used for chunk ordering and CDC event dedup).
+- Table must have a **primary key** column (used for chunk ordering and CDC event dedup). Any sortable type works (integer, string, etc.) — the PK is treated as a string internally.
 - **Supplemental logging** must be enabled on the table:
   ```sql
   ALTER TABLE my_table ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;

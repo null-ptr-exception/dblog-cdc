@@ -2,6 +2,7 @@ package replicator_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -38,15 +39,15 @@ type mockChunkQuerier struct {
 	rows []map[string]any
 }
 
-func (m *mockChunkQuerier) QueryChunk(_ context.Context, table string, afterPK int64, limit int, scn uint64) (*event.ChunkResult, error) {
+func (m *mockChunkQuerier) QueryChunk(_ context.Context, table string, afterPK string, limit int, scn uint64) (*event.ChunkResult, error) {
 	result := &event.ChunkResult{
 		Table: table,
 		SCN:   scn,
-		Rows:  make(map[int64]map[string]any),
+		Rows:  make(map[string]map[string]any),
 	}
 	count := 0
 	for _, row := range m.rows {
-		pk := row["ID"].(int64)
+		pk := fmt.Sprint(row["ID"])
 		if pk > afterPK {
 			result.Rows[pk] = row
 			result.LastPK = pk
@@ -76,7 +77,7 @@ func (w *captureWriter) WriteBatch(_ context.Context, events []event.Event) erro
 func TestReplicator_ChunksAndCDC(t *testing.T) {
 	cdc := &mockCDCSource{
 		events: []event.Event{
-			{Table: "T", Op: event.OpUpdate, SCN: 105, PK: 2, Columns: map[string]any{"ID": int64(2), "V": "cdc_updated"}},
+			{Table: "T", Op: event.OpUpdate, SCN: 105, PK: "2", Columns: map[string]any{"ID": int64(2), "V": "cdc_updated"}},
 		},
 	}
 
@@ -102,7 +103,7 @@ func TestReplicator_ChunksAndCDC(t *testing.T) {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	found := map[int64]event.Event{}
+	found := map[string]event.Event{}
 	for _, e := range writer.events {
 		found[e.PK] = e
 	}
@@ -111,7 +112,7 @@ func TestReplicator_ChunksAndCDC(t *testing.T) {
 		t.Fatalf("expected at least 3 written events, got %d", len(found))
 	}
 
-	if found[2].Columns["V"] != "cdc_updated" {
-		t.Errorf("PK 2 should be from CDC, got %v", found[2].Columns["V"])
+	if found["2"].Columns["V"] != "cdc_updated" {
+		t.Errorf("PK 2 should be from CDC, got %v", found["2"].Columns["V"])
 	}
 }

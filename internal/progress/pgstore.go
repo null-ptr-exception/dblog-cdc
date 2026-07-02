@@ -19,7 +19,7 @@ func NewPgStore(pool *pgxpool.Pool, tableName string) *PgStore {
 func (s *PgStore) EnsureTable(ctx context.Context) error {
 	query := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		table_name  TEXT PRIMARY KEY,
-		last_pk     BIGINT,
+		last_pk     TEXT,
 		last_lsn    BIGINT,
 		updated_at  TIMESTAMPTZ DEFAULT now()
 	)`, s.tableName)
@@ -29,7 +29,8 @@ func (s *PgStore) EnsureTable(ctx context.Context) error {
 
 func (s *PgStore) Get(ctx context.Context, table string) (State, error) {
 	var state State
-	var lastPK, lastSCN *int64
+	var lastPK *string
+	var lastSCN *int64
 
 	query := fmt.Sprintf("SELECT last_pk, last_lsn FROM %s WHERE table_name = $1", s.tableName)
 	err := s.pool.QueryRow(ctx, query, table).Scan(&lastPK, &lastSCN)
@@ -47,7 +48,7 @@ func (s *PgStore) Get(ctx context.Context, table string) (State, error) {
 	return state, nil
 }
 
-func (s *PgStore) Save(ctx context.Context, table string, lastPK *int64, lastSCN uint64) error {
+func (s *PgStore) Save(ctx context.Context, table string, lastPK *string, lastSCN uint64) error {
 	query := fmt.Sprintf(`INSERT INTO %s (table_name, last_pk, last_lsn, updated_at)
 		VALUES ($1, $2, $3, now())
 		ON CONFLICT (table_name) DO UPDATE SET

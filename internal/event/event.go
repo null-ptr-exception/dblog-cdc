@@ -25,14 +25,14 @@ type Event struct {
 	Table   string
 	Op      OpType
 	SCN     uint64
-	PK      int64
+	PK      string
 	Columns map[string]any
 }
 
 type ChunkResult struct {
 	Table    string
 	SCN      uint64
-	Rows     map[int64]map[string]any
-	LastPK   int64
+	Rows     map[string]map[string]any
+	LastPK   string
 	Complete bool
 }

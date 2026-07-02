@@ -7,7 +7,7 @@ import (
 )
 
 type Querier interface {
-	QueryChunk(ctx context.Context, table string, afterPK int64, limit int, scn uint64) (*event.ChunkResult, error)
+	QueryChunk(ctx context.Context, table string, afterPK string, limit int, scn uint64) (*event.ChunkResult, error)
 	CurrentSCN(ctx context.Context) (uint64, error)
 }
 
@@ -19,6 +19,6 @@ func NewSelector(q Querier) *Selector {
 	return &Selector{querier: q}
 }
 
-func (s *Selector) Next(ctx context.Context, table string, afterPK int64, chunkSize int, scn uint64) (*event.ChunkResult, error) {
+func (s *Selector) Next(ctx context.Context, table string, afterPK string, chunkSize int, scn uint64) (*event.ChunkResult, error) {
 	return s.querier.QueryChunk(ctx, table, afterPK, chunkSize, scn)
 }
