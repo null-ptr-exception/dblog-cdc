@@ -19,6 +19,7 @@ import (
 	"github.com/null-ptr-exception/dblog-cdc/internal/olr"
 	"github.com/null-ptr-exception/dblog-cdc/internal/progress"
 	"github.com/null-ptr-exception/dblog-cdc/internal/replicator"
+	"github.com/null-ptr-exception/dblog-cdc/internal/transform"
 	"github.com/null-ptr-exception/dblog-cdc/internal/writer"
 )
 
@@ -151,6 +152,39 @@ func (e *testEnv) startReplicator(chunkSize int) *replicatorHandle {
 
 	tbl := config.Table{Name: "ORDERS", ChunkSize: chunkSize}
 	r := replicator.New(cdcClient, querier, ybWriter, pgStore, tbl)
+
+	rCtx, rCancel := context.WithCancel(e.ctx)
+	go func() {
+		if err := r.Run(rCtx); err != nil && rCtx.Err() == nil {
+			e.t.Errorf("replicator error: %v", err)
+		}
+	}()
+
+	return &replicatorHandle{cancel: rCancel, cdcClient: cdcClient}
+}
+
+func (e *testEnv) startReplicatorForTable(table, pkCol string, chunkSize int) *replicatorHandle {
+	e.t.Helper()
+
+	pgStore := progress.NewPgStore(e.ybPool, "dblog_progress")
+	if err := pgStore.EnsureTable(e.ctx); err != nil {
+		e.t.Fatalf("ensure progress: %v", err)
+	}
+
+	tables := []string{table}
+	pkColumns := map[string]string{table: pkCol}
+	cdcClient := olr.NewClient(getOLRHost(), getOLRPort(), "FREE", tables, pkColumns)
+	querier := chunk.NewOracleQuerier(e.oracleDB, pkCol)
+	ybWriter := writer.NewPgWriter(e.ybPool, pkCol)
+
+	typeMap, err := transform.LoadTypeMap(e.ctx, e.oracleDB, tables)
+	if err != nil {
+		e.t.Fatalf("load type map: %v", err)
+	}
+
+	tbl := config.Table{Name: table, ChunkSize: chunkSize}
+	r := replicator.New(cdcClient, querier, ybWriter, pgStore, tbl)
+	r.SetTransformer(transform.New(typeMap))
 
 	rCtx, rCancel := context.WithCancel(e.ctx)
 	go func() {
