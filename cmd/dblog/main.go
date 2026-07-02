@@ -18,6 +18,7 @@ import (
 	"github.com/null-ptr-exception/dblog-cdc/internal/olr"
 	"github.com/null-ptr-exception/dblog-cdc/internal/progress"
 	"github.com/null-ptr-exception/dblog-cdc/internal/replicator"
+	"github.com/null-ptr-exception/dblog-cdc/internal/transform"
 	"github.com/null-ptr-exception/dblog-cdc/internal/writer"
 )
 
@@ -61,6 +62,13 @@ func main() {
 		pkColumns[t.Name] = t.PKColumn
 	}
 
+	typeMap, err := transform.LoadTypeMap(ctx, oracleDB, tableNames)
+	if err != nil {
+		slog.Error("load type map", "error", err)
+		os.Exit(1)
+	}
+	transformer := transform.New(typeMap)
+
 	for _, tbl := range cfg.Tables {
 		slog.Info("starting replication", "table", tbl.Name)
 
@@ -69,6 +77,7 @@ func main() {
 		ybWriter := writer.NewPgWriter(ybPool, tbl.PKColumn)
 
 		r := replicator.New(cdcClient, querier, ybWriter, pgStore, tbl)
+		r.SetTransformer(transformer)
 		if err := r.Run(ctx); err != nil {
 			slog.Error("replication failed", "table", tbl.Name, "error", err)
 			os.Exit(1)

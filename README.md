@@ -7,11 +7,26 @@ A Change-Data-Capture (CDC) replication tool that streams data from Oracle to Yu
 The replicator runs two processes in parallel:
 
 1. **Chunk loading** — reads the full table state in primary-key-ordered chunks using `SELECT ... AS OF SCN`. Tracks progress (last PK) so it can pause and resume.
-2. **CDC streaming** — receives real-time row changes from [OpenLogReplicator](https://github.com/bersler/OpenLogReplicator) via its network protobuf protocol.
+2. **CDC streaming** — receives real-time row changes from [OpenLogReplicator](https://github.com/bersler/OpenLogReplicator) via its network protocol (protobuf handshake, JSON data).
 
 During chunk loading, CDC events are deduplicated against chunk data: if a CDC event has a higher SCN than the chunk for the same primary key, the CDC version wins. This replaces the DBLog paper's watermark table approach — Oracle's `AS OF SCN` gives us the exact log position of each chunk read, so no watermark writes to the source database are needed.
 
 After all chunks are loaded, the replicator switches to CDC-only mode and continuously applies changes to YugabyteDB using upserts (`INSERT ... ON CONFLICT DO UPDATE`).
+
+### Schema-aware type mapping
+
+Oracle and PostgreSQL/YugabyteDB have different type systems. OLR delivers all values as JSON, which loses type information (e.g. large integers lose precision as float64, timestamps use non-standard formats). At startup, the replicator queries Oracle's `ALL_TAB_COLUMNS` to build a column type map, then converts values before writing:
+
+| Oracle type | OLR delivers | Converted to |
+|-------------|-------------|--------------|
+| `NUMBER` (high precision) | `json.Number` string | Passed through (pgx binds as numeric) |
+| `TIMESTAMP WITH TIME ZONE` | `"epoch_nanos,+offset"` | `time.Time` |
+| `RAW` | hex string (`"deadbeef"`) | `[]byte` |
+| `INTERVAL DAY TO SECOND` | nanoseconds (number) | PG interval string (`"5 days 03:30:15"`) |
+| `BINARY_FLOAT` | float64 with artifact | `float32` (removes promotion noise) |
+| `DATE`, `TIMESTAMP` | ISO-like string | Passed through (PG accepts the format) |
+
+No configuration needed — type mapping is automatic.
 
 ## Prerequisites
 
@@ -133,6 +148,7 @@ Key components:
 | `internal/chunk` | Oracle chunk querier (`AS OF SCN`) |
 | `internal/buffer` | In-memory dedup buffer (CDC vs chunk events) |
 | `internal/writer` | YugabyteDB upsert/delete writer |
+| `internal/transform` | Schema-aware Oracle→PG type mapping |
 | `internal/progress` | Chunk position + SCN tracking (stored in target DB) |
 
 ## Differences from the DBLog paper

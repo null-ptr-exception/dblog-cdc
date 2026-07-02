@@ -3,6 +3,7 @@ package olr
 import (
 	"context"
 	"encoding/binary"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -247,7 +248,9 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 		}
 
 		var msg jsonMessage
-		if err := json.Unmarshal(raw, &msg); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		if err := dec.Decode(&msg); err != nil {
 			slog.Warn("skip malformed JSON message", "error", err)
 			continue
 		}

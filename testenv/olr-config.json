@@ -23,7 +23,8 @@
       },
       "filter": {
         "table": [
-          {"owner": "TESTUSER", "table": "ORDERS"}
+          {"owner": "TESTUSER", "table": "ORDERS"},
+          {"owner": "TESTUSER", "table": "TYPE_TEST"}
         ]
       }
     }

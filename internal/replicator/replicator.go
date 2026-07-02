@@ -10,6 +10,7 @@ import (
 	"github.com/null-ptr-exception/dblog-cdc/internal/config"
 	"github.com/null-ptr-exception/dblog-cdc/internal/event"
 	"github.com/null-ptr-exception/dblog-cdc/internal/progress"
+	"github.com/null-ptr-exception/dblog-cdc/internal/transform"
 )
 
 const chunksCompleteMarker = "__COMPLETE__"
@@ -24,11 +25,12 @@ type BatchWriter interface {
 }
 
 type Replicator struct {
-	cdc    CDCSource
-	chunks chunk.Querier
-	writer BatchWriter
-	store  progress.Store
-	table  config.Table
+	cdc         CDCSource
+	chunks      chunk.Querier
+	writer      BatchWriter
+	store       progress.Store
+	table       config.Table
+	transformer *transform.Transformer
 }
 
 func New(cdc CDCSource, chunks chunk.Querier, writer BatchWriter, store progress.Store, table config.Table) *Replicator {
@@ -38,6 +40,19 @@ func New(cdc CDCSource, chunks chunk.Querier, writer BatchWriter, store progress
 		writer: writer,
 		store:  store,
 		table:  table,
+	}
+}
+
+func (r *Replicator) SetTransformer(t *transform.Transformer) {
+	r.transformer = t
+}
+
+func (r *Replicator) transformEvents(events []event.Event) {
+	if r.transformer == nil {
+		return
+	}
+	for i := range events {
+		r.transformer.TransformEvent(&events[i])
 	}
 }
 
@@ -85,6 +100,7 @@ func (r *Replicator) Run(ctx context.Context) error {
 		if chunksComplete {
 			events := buf.Drain()
 			if len(events) > 0 {
+				r.transformEvents(events)
 				if err := r.writer.WriteBatch(ctx, events); err != nil {
 					return err
 				}
@@ -116,6 +132,7 @@ func (r *Replicator) Run(ctx context.Context) error {
 
 			events := buf.Drain()
 			if len(events) > 0 {
+				r.transformEvents(events)
 				if err := r.writer.WriteBatch(ctx, events); err != nil {
 					return err
 				}
@@ -143,6 +160,7 @@ func (r *Replicator) Run(ctx context.Context) error {
 			buf.PushCDC(ev)
 			events := buf.Drain()
 			if len(events) > 0 {
+				r.transformEvents(events)
 				if err := r.writer.WriteBatch(ctx, events); err != nil {
 					return err
 				}
@@ -152,6 +170,7 @@ func (r *Replicator) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			events := buf.Drain()
 			if len(events) > 0 {
+				r.transformEvents(events)
 				r.writer.WriteBatch(ctx, events)
 			}
 			return ctx.Err()
