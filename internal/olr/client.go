@@ -163,6 +163,32 @@ func recvMsg(conn net.Conn, msg proto.Message) error {
 	return proto.Unmarshal(buf, msg)
 }
 
+func BuildStreamRequest(code pb.ResponseCode, startSCN, infoSCN uint64) (*pb.RedoRequest, error) {
+	resumeSCN := startSCN
+	if resumeSCN == 0 && infoSCN > 0 {
+		resumeSCN = infoSCN
+	}
+
+	switch code {
+	case pb.ResponseCode_REPLICATE:
+		return &pb.RedoRequest{
+			Code: pb.RequestCode_CONTINUE,
+			CScn: &resumeSCN,
+			CIdx: func() *uint64 { v := uint64(0); return &v }(),
+		}, nil
+	case pb.ResponseCode_READY:
+		req := &pb.RedoRequest{Code: pb.RequestCode_START}
+		if resumeSCN > 0 {
+			req.TmVal = &pb.RedoRequest_Scn{Scn: resumeSCN}
+		} else {
+			req.TmVal = &pb.RedoRequest_Scn{Scn: 0xFFFFFFFFFFFFFFFF}
+		}
+		return req, nil
+	default:
+		return nil, fmt.Errorf("unexpected info response: %s", code)
+	}
+}
+
 func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- event.Event) error {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", c.addr)
@@ -190,38 +216,11 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 	}
 	slog.Info("OLR info response", "code", infoResp.Code, "scn", infoResp.GetScn())
 
-	resumeSCN := startSCN
-	if resumeSCN == 0 && infoResp.GetScn() > 0 {
-		resumeSCN = infoResp.GetScn()
+	req, err := BuildStreamRequest(infoResp.Code, startSCN, infoResp.GetScn())
+	if err != nil {
+		return err
 	}
-
-	var req *pb.RedoRequest
-	switch infoResp.Code {
-	case pb.ResponseCode_REPLICATE:
-		req = &pb.RedoRequest{
-			Code:         pb.RequestCode_CONTINUE,
-			DatabaseName: c.dbName,
-			CScn:         &resumeSCN,
-			CIdx:         func() *uint64 { v := uint64(0); return &v }(),
-		}
-	case pb.ResponseCode_READY:
-		if startSCN > 0 {
-			req = &pb.RedoRequest{
-				Code:         pb.RequestCode_CONTINUE,
-				DatabaseName: c.dbName,
-				CScn:         &startSCN,
-				CIdx:         func() *uint64 { v := uint64(0); return &v }(),
-			}
-		} else {
-			req = &pb.RedoRequest{
-				Code:         pb.RequestCode_START,
-				DatabaseName: c.dbName,
-				TmVal:        &pb.RedoRequest_Scn{Scn: 0xFFFFFFFFFFFFFFFF},
-			}
-		}
-	default:
-		return fmt.Errorf("unexpected info response: %s", infoResp.Code)
-	}
+	req.DatabaseName = c.dbName
 
 	if err := sendMsg(conn, req); err != nil {
 		return fmt.Errorf("send %s: %w", req.Code, err)

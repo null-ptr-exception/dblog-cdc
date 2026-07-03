@@ -95,3 +95,16 @@ func TestConvertPayload_SkipBeginCommit(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildStreamRequest_READYWithStartSCNStartsAtSCN(t *testing.T) {
+	req, err := olr.BuildStreamRequest(pb.ResponseCode_READY, 12345, 0)
+	if err != nil {
+		t.Fatalf("BuildStreamRequest() error: %v", err)
+	}
+	if req.Code != pb.RequestCode_START {
+		t.Fatalf("Code = %s, want START", req.Code)
+	}
+	if req.GetScn() != 12345 {
+		t.Fatalf("SCN = %d, want 12345", req.GetScn())
+	}
+}
