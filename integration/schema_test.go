@@ -29,7 +29,7 @@ func TestSchema_OLRTypeCompatibility(t *testing.T) {
 	defer cancel()
 
 	env := setupEnv(t, ctx)
-	ybWriter := writer.NewPgWriter(env.ybPool, "ID")
+	ybWriter := writer.NewPgWriter(env.ybPool, []string{"ID"})
 
 	type typeCase struct {
 		name    string
@@ -266,7 +266,7 @@ func TestSchema_OLRTypeCompatibility(t *testing.T) {
 			ev := event.Event{
 				Table:   tc.ybTable,
 				Op:      event.OpInsert,
-				PK:      fmt.Sprint(tc.olrColumns["ID"]),
+				PK:      []string{fmt.Sprint(tc.olrColumns["ID"])},
 				Columns: tc.olrColumns,
 			}
 			xformer.TransformEvent(&ev)
