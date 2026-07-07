@@ -32,7 +32,7 @@ No configuration needed — type mapping is automatic.
 
 ### Source: Oracle
 
-- Table must have a **primary key** column (used for chunk ordering and CDC event dedup). Any sortable type works (integer, string, etc.) — the PK is treated as a string internally.
+- Table must have a **primary key** (used for chunk ordering and CDC event dedup). Both single-column and compound (multi-column) primary keys are supported. Any sortable type works (integer, string, etc.) — PK values are treated as strings internally.
 - **Supplemental logging** must be enabled on the table:
   ```sql
   ALTER TABLE my_table ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
@@ -53,12 +53,19 @@ No configuration needed — type mapping is automatic.
 
 ### Target: YugabyteDB (or PostgreSQL)
 
-- The target table must be created manually with a matching schema and the **same primary key**:
+- The target table must be created manually with a matching schema and the **same primary key** (including compound PKs):
   ```sql
   CREATE TABLE orders (
       id BIGINT PRIMARY KEY,
       amount DOUBLE PRECISION,
       status TEXT
+  );
+  -- Compound PK example:
+  CREATE TABLE order_items (
+      order_id BIGINT,
+      item_id  BIGINT,
+      qty      INTEGER,
+      PRIMARY KEY (order_id, item_id)
   );
   ```
 - A progress table is created automatically (default: `dblog_progress`) to track chunk position and last-seen SCN.
@@ -80,8 +87,13 @@ cdc:
 
 tables:
   - name: ORDERS
-    pk_column: ID       # primary key column name (default: ID)
-    chunk_size: 10000   # rows per chunk (default: 10000)
+    pk_columns:          # primary key column(s) (default: [ID])
+      - ID
+    chunk_size: 10000    # rows per chunk (default: 10000)
+  - name: ORDER_ITEMS
+    pk_columns:          # compound PK example
+      - ORDER_ID
+      - ITEM_ID
 
 progress:
   table: dblog_progress  # progress tracking table in target DB
