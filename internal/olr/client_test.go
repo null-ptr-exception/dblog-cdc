@@ -17,7 +17,7 @@ func TestConvertJSONPayload_Insert(t *testing.T) {
 		},
 	}
 
-	ev, err := convertJSONPayload(p, 12345, "ID")
+	ev, err := convertJSONPayload(p, 12345, []string{"ID"})
 	if err != nil {
 		t.Fatalf("convertJSONPayload() error: %v", err)
 	}
@@ -30,8 +30,8 @@ func TestConvertJSONPayload_Insert(t *testing.T) {
 	if ev.SCN != 12345 {
 		t.Errorf("SCN = %d", ev.SCN)
 	}
-	if ev.PK != "42" {
-		t.Errorf("PK = %s", ev.PK)
+	if event.EncodePK(ev.PK) != "42" {
+		t.Errorf("PK = %v", ev.PK)
 	}
 	if ev.Columns["AMOUNT"] != float64(99.95) {
 		t.Errorf("AMOUNT = %v", ev.Columns["AMOUNT"])
@@ -48,15 +48,15 @@ func TestConvertJSONPayload_Update(t *testing.T) {
 		},
 	}
 
-	ev, err := convertJSONPayload(p, 200, "ID")
+	ev, err := convertJSONPayload(p, 200, []string{"ID"})
 	if err != nil {
 		t.Fatalf("convertJSONPayload() error: %v", err)
 	}
 	if ev.Op != event.OpUpdate {
 		t.Errorf("Op = %v", ev.Op)
 	}
-	if ev.PK != "7" {
-		t.Errorf("PK = %s", ev.PK)
+	if event.EncodePK(ev.PK) != "7" {
+		t.Errorf("PK = %v", ev.PK)
 	}
 }
 
@@ -69,22 +69,22 @@ func TestConvertJSONPayload_Delete(t *testing.T) {
 		},
 	}
 
-	ev, err := convertJSONPayload(p, 300, "ID")
+	ev, err := convertJSONPayload(p, 300, []string{"ID"})
 	if err != nil {
 		t.Fatalf("convertJSONPayload() error: %v", err)
 	}
 	if ev.Op != event.OpDelete {
 		t.Errorf("Op = %v", ev.Op)
 	}
-	if ev.PK != "3" {
-		t.Errorf("PK = %s", ev.PK)
+	if event.EncodePK(ev.PK) != "3" {
+		t.Errorf("PK = %v", ev.PK)
 	}
 }
 
 func TestConvertJSONPayload_SkipNonDML(t *testing.T) {
 	for _, op := range []string{"begin", "commit", "ddl", "chkpt"} {
 		p := jsonPayload{Op: op}
-		_, err := convertJSONPayload(p, 100, "ID")
+		_, err := convertJSONPayload(p, 100, []string{"ID"})
 		if err != ErrSkipEvent {
 			t.Errorf("Op %q should return ErrSkipEvent, got %v", op, err)
 		}
@@ -101,12 +101,12 @@ func TestConvertJSONPayload_StringPK(t *testing.T) {
 		},
 	}
 
-	ev, err := convertJSONPayload(p, 100, "ID")
+	ev, err := convertJSONPayload(p, 100, []string{"ID"})
 	if err != nil {
 		t.Fatalf("convertJSONPayload() error: %v", err)
 	}
-	if ev.PK != "12345678901234567" {
-		t.Errorf("PK = %s, want 12345678901234567", ev.PK)
+	if event.EncodePK(ev.PK) != "12345678901234567" {
+		t.Errorf("PK = %v, want [12345678901234567]", ev.PK)
 	}
 }
 
@@ -120,11 +120,31 @@ func TestConvertJSONPayload_NullColumn(t *testing.T) {
 		},
 	}
 
-	ev, err := convertJSONPayload(p, 100, "ID")
+	ev, err := convertJSONPayload(p, 100, []string{"ID"})
 	if err != nil {
 		t.Fatalf("convertJSONPayload() error: %v", err)
 	}
 	if ev.Columns["STATUS"] != nil {
 		t.Errorf("STATUS = %v, want nil", ev.Columns["STATUS"])
+	}
+}
+
+func TestConvertJSONPayload_CompoundPK(t *testing.T) {
+	p := jsonPayload{
+		Op:     "c",
+		Schema: jsonSchema{Table: "ORDER_ITEMS"},
+		After: map[string]any{
+			"ORDER_ID": float64(10),
+			"LINE_NUM": float64(2),
+			"QTY":      float64(5),
+		},
+	}
+
+	ev, err := convertJSONPayload(p, 500, []string{"ORDER_ID", "LINE_NUM"})
+	if err != nil {
+		t.Fatalf("convertJSONPayload() error: %v", err)
+	}
+	if len(ev.PK) != 2 || ev.PK[0] != "10" || ev.PK[1] != "2" {
+		t.Errorf("PK = %v, want [10 2]", ev.PK)
 	}
 }

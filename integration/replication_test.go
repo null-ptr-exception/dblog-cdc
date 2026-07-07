@@ -146,9 +146,9 @@ func (e *testEnv) startReplicator(chunkSize int) *replicatorHandle {
 		e.t.Fatalf("ensure progress: %v", err)
 	}
 
-	cdcClient := olr.NewClient(getOLRHost(), getOLRPort(), "FREE", []string{"ORDERS"}, map[string]string{"ORDERS": "ID"})
-	querier := chunk.NewOracleQuerier(e.oracleDB, "ID")
-	ybWriter := writer.NewPgWriter(e.ybPool, "ID")
+	cdcClient := olr.NewClient(getOLRHost(), getOLRPort(), "FREE", []string{"ORDERS"}, map[string][]string{"ORDERS": {"ID"}})
+	querier := chunk.NewOracleQuerier(e.oracleDB, []string{"ID"})
+	ybWriter := writer.NewPgWriter(e.ybPool, []string{"ID"})
 
 	tbl := config.Table{Name: "ORDERS", ChunkSize: chunkSize}
 	r := replicator.New(cdcClient, querier, ybWriter, pgStore, tbl)
@@ -163,7 +163,7 @@ func (e *testEnv) startReplicator(chunkSize int) *replicatorHandle {
 	return &replicatorHandle{cancel: rCancel, cdcClient: cdcClient}
 }
 
-func (e *testEnv) startReplicatorForTable(table, pkCol string, chunkSize int) *replicatorHandle {
+func (e *testEnv) startReplicatorForTable(table string, pkCols []string, chunkSize int) *replicatorHandle {
 	e.t.Helper()
 
 	pgStore := progress.NewPgStore(e.ybPool, "dblog_progress")
@@ -172,10 +172,10 @@ func (e *testEnv) startReplicatorForTable(table, pkCol string, chunkSize int) *r
 	}
 
 	tables := []string{table}
-	pkColumns := map[string]string{table: pkCol}
+	pkColumns := map[string][]string{table: pkCols}
 	cdcClient := olr.NewClient(getOLRHost(), getOLRPort(), "FREE", tables, pkColumns)
-	querier := chunk.NewOracleQuerier(e.oracleDB, pkCol)
-	ybWriter := writer.NewPgWriter(e.ybPool, pkCol)
+	querier := chunk.NewOracleQuerier(e.oracleDB, pkCols)
+	ybWriter := writer.NewPgWriter(e.ybPool, pkCols)
 
 	typeMap, err := transform.LoadTypeMap(e.ctx, e.oracleDB, tables)
 	if err != nil {

@@ -107,7 +107,7 @@ func TestSchema_TypedStress(t *testing.T) {
 	// Seed initial rows
 	seedTypedRows(t, env, startPK, 50)
 
-	rh := env.startReplicatorForTable("TYPE_STRESS", "ID", 25)
+	rh := env.startReplicatorForTable("TYPE_STRESS", []string{"ID"}, 25)
 	defer rh.cancel()
 
 	if err := rh.cdcClient.WaitStreaming(ctx); err != nil {

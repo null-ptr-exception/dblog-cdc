@@ -15,6 +15,6 @@ func (p *pgExecutor) ExecContext(ctx context.Context, query string, args ...any)
 	return err
 }
 
-func NewPgWriter(pool *pgxpool.Pool, pkCol string) *Writer {
-	return New(&pgExecutor{pool: pool}, pkCol)
+func NewPgWriter(pool *pgxpool.Pool, pkCols []string) *Writer {
+	return New(&pgExecutor{pool: pool}, pkCols)
 }

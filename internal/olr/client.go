@@ -1,9 +1,9 @@
 package olr
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,10 +28,10 @@ type jsonMessage struct {
 }
 
 type jsonPayload struct {
-	Op     string            `json:"op"`
-	Schema jsonSchema        `json:"schema"`
-	Before map[string]any    `json:"before"`
-	After  map[string]any    `json:"after"`
+	Op     string         `json:"op"`
+	Schema jsonSchema     `json:"schema"`
+	Before map[string]any `json:"before"`
+	After  map[string]any `json:"after"`
 }
 
 type jsonSchema struct {
@@ -39,7 +39,7 @@ type jsonSchema struct {
 	Table string `json:"table"`
 }
 
-func convertJSONPayload(p jsonPayload, scn uint64, pkCol string) (event.Event, error) {
+func convertJSONPayload(p jsonPayload, scn uint64, pkCols []string) (event.Event, error) {
 	var op event.OpType
 	switch p.Op {
 	case "c":
@@ -60,11 +60,14 @@ func convertJSONPayload(p jsonPayload, scn uint64, pkCol string) (event.Event, e
 		return event.Event{}, fmt.Errorf("no column data in %s event for table %s", p.Op, p.Schema.Table)
 	}
 
-	pkVal, ok := columns[pkCol]
-	if !ok || pkVal == nil {
-		return event.Event{}, fmt.Errorf("PK column %q not found in event for table %s", pkCol, p.Schema.Table)
+	pk := make([]string, len(pkCols))
+	for i, col := range pkCols {
+		pkVal, ok := columns[col]
+		if !ok || pkVal == nil {
+			return event.Event{}, fmt.Errorf("PK column %q not found in event for table %s", col, p.Schema.Table)
+		}
+		pk[i] = fmt.Sprint(pkVal)
 	}
-	pk := fmt.Sprint(pkVal)
 
 	return event.Event{
 		Table:   p.Schema.Table,
@@ -79,7 +82,7 @@ type Client struct {
 	addr      string
 	dbName    string
 	tables    map[string]bool
-	pkColumns map[string]string
+	pkColumns map[string][]string
 
 	mu        sync.Mutex
 	lastSCN   uint64
@@ -88,7 +91,7 @@ type Client struct {
 	streaming chan struct{}
 }
 
-func NewClient(host string, port int, dbName string, tables []string, pkColumns map[string]string) *Client {
+func NewClient(host string, port int, dbName string, tables []string, pkColumns map[string][]string) *Client {
 	tableSet := make(map[string]bool, len(tables))
 	for _, t := range tables {
 		tableSet[t] = true
@@ -268,8 +271,8 @@ func (c *Client) Stream(ctx context.Context, startSCN uint64, events chan<- even
 				continue
 			}
 
-			pkCol := c.pkColumns[p.Schema.Table]
-			ev, err := convertJSONPayload(p, msg.SCN, pkCol)
+			pkCols := c.pkColumns[p.Schema.Table]
+			ev, err := convertJSONPayload(p, msg.SCN, pkCols)
 			if errors.Is(err, ErrSkipEvent) {
 				continue
 			}

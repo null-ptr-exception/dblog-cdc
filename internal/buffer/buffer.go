@@ -27,9 +27,10 @@ func (b *Buffer) ApplyCDCDedup(e event.Event) {
 		return
 	}
 
+	key := event.EncodePK(e.PK)
 	if e.SCN > b.chunk.SCN {
-		if _, exists := b.chunk.Rows[e.PK]; exists {
-			delete(b.chunk.Rows, e.PK)
+		if _, exists := b.chunk.Rows[key]; exists {
+			delete(b.chunk.Rows, key)
 			b.cdcDedup = append(b.cdcDedup, e)
 			return
 		}
@@ -44,13 +45,13 @@ func (b *Buffer) Drain() []event.Event {
 	out = append(out, b.cdcDedup...)
 
 	if b.chunk != nil {
-		for pk, cols := range b.chunk.Rows {
+		for _, row := range b.chunk.Rows {
 			out = append(out, event.Event{
 				Table:   b.chunk.Table,
 				Op:      event.OpInsert,
 				SCN:     b.chunk.SCN,
-				PK:      pk,
-				Columns: cols,
+				PK:      row.PK,
+				Columns: row.Columns,
 			})
 		}
 	}

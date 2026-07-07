@@ -6,13 +6,13 @@ import (
 )
 
 type State struct {
-	LastPK  *string
+	LastPK  []string
 	LastSCN uint64
 }
 
 type Store interface {
 	Get(ctx context.Context, table string) (State, error)
-	Save(ctx context.Context, table string, lastPK *string, lastSCN uint64) error
+	Save(ctx context.Context, table string, lastPK []string, lastSCN uint64) error
 }
 
 type MemoryStore struct {
@@ -30,7 +30,7 @@ func (m *MemoryStore) Get(_ context.Context, table string) (State, error) {
 	return m.state[table], nil
 }
 
-func (m *MemoryStore) Save(_ context.Context, table string, lastPK *string, lastSCN uint64) error {
+func (m *MemoryStore) Save(_ context.Context, table string, lastPK []string, lastSCN uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.state[table] = State{LastPK: lastPK, LastSCN: lastSCN}

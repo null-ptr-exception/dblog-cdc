@@ -56,10 +56,10 @@ func main() {
 	}
 
 	tableNames := make([]string, len(cfg.Tables))
-	pkColumns := make(map[string]string, len(cfg.Tables))
+	pkColumns := make(map[string][]string, len(cfg.Tables))
 	for i, t := range cfg.Tables {
 		tableNames[i] = t.Name
-		pkColumns[t.Name] = t.PKColumn
+		pkColumns[t.Name] = t.PKColumns
 	}
 
 	typeMap, err := transform.LoadTypeMap(ctx, oracleDB, tableNames)
@@ -73,8 +73,8 @@ func main() {
 		slog.Info("starting replication", "table", tbl.Name)
 
 		cdcClient := olr.NewClient(cfg.CDC.Host, cfg.CDC.Port, "", tableNames, pkColumns)
-		querier := chunk.NewOracleQuerier(oracleDB, tbl.PKColumn)
-		ybWriter := writer.NewPgWriter(ybPool, tbl.PKColumn)
+		querier := chunk.NewOracleQuerier(oracleDB, tbl.PKColumns)
+		ybWriter := writer.NewPgWriter(ybPool, tbl.PKColumns)
 
 		r := replicator.New(cdcClient, querier, ybWriter, pgStore, tbl)
 		r.SetTransformer(transformer)

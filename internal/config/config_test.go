@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/null-ptr-exception/dblog-cdc/internal/config"
@@ -93,5 +94,39 @@ tables:
 	}
 	if cfg.Progress.Table != "dblog_progress" {
 		t.Errorf("default progress table = %q", cfg.Progress.Table)
+	}
+	if !reflect.DeepEqual(cfg.Tables[0].PKColumns, []string{"ID"}) {
+		t.Errorf("default PKColumns = %v, want [ID]", cfg.Tables[0].PKColumns)
+	}
+}
+
+func TestLoadConfig_CompoundPK(t *testing.T) {
+	yaml := `
+source:
+  dsn: "oracle://localhost:1521/XE"
+target:
+  dsn: "postgres://localhost:5433/yugabyte"
+cdc:
+  host: "localhost"
+  port: 5000
+tables:
+  - name: "ORDER_ITEMS"
+    pk_columns:
+      - "ORDER_ID"
+      - "LINE_NUM"
+    chunk_size: 500
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0644)
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	want := []string{"ORDER_ID", "LINE_NUM"}
+	if !reflect.DeepEqual(cfg.Tables[0].PKColumns, want) {
+		t.Errorf("PKColumns = %v, want %v", cfg.Tables[0].PKColumns, want)
 	}
 }

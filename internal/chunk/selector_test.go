@@ -10,24 +10,33 @@ import (
 )
 
 type mockQuerier struct {
-	rows  []map[string]any
-	pkCol string
-	scn   uint64
+	rows   []map[string]any
+	pkCols []string
+	scn    uint64
 }
 
-func (m *mockQuerier) QueryChunk(_ context.Context, table string, afterPK string, limit int, scn uint64) (*event.ChunkResult, error) {
+func (m *mockQuerier) QueryChunk(_ context.Context, table string, afterPK []string, limit int, scn uint64) (*event.ChunkResult, error) {
 	m.scn = scn
 	result := &event.ChunkResult{
 		Table: table,
 		SCN:   scn,
-		Rows:  make(map[string]map[string]any),
+		Rows:  make(map[string]event.ChunkRow),
+	}
+
+	afterKey := ""
+	if len(afterPK) > 0 {
+		afterKey = event.EncodePK(afterPK)
 	}
 
 	count := 0
 	for _, row := range m.rows {
-		pk := fmt.Sprint(row[m.pkCol])
-		if pk > afterPK {
-			result.Rows[pk] = row
+		pk := make([]string, len(m.pkCols))
+		for i, col := range m.pkCols {
+			pk[i] = fmt.Sprint(row[col])
+		}
+		key := event.EncodePK(pk)
+		if key > afterKey {
+			result.Rows[key] = event.ChunkRow{PK: pk, Columns: row}
 			result.LastPK = pk
 			count++
 			if count >= limit {
@@ -46,8 +55,8 @@ func (m *mockQuerier) CurrentSCN(_ context.Context) (uint64, error) {
 
 func TestSelector_SingleChunk(t *testing.T) {
 	q := &mockQuerier{
-		pkCol: "ID",
-		scn:   100,
+		pkCols: []string{"ID"},
+		scn:    100,
 		rows: []map[string]any{
 			{"ID": int64(1), "NAME": "a"},
 			{"ID": int64(2), "NAME": "b"},
@@ -55,7 +64,7 @@ func TestSelector_SingleChunk(t *testing.T) {
 	}
 
 	s := chunk.NewSelector(q)
-	result, err := s.Next(context.Background(), "ORDERS", "", 10, 100)
+	result, err := s.Next(context.Background(), "ORDERS", nil, 10, 100)
 	if err != nil {
 		t.Fatalf("Next() error: %v", err)
 	}
@@ -65,8 +74,8 @@ func TestSelector_SingleChunk(t *testing.T) {
 	if !result.Complete {
 		t.Error("should be complete (2 rows < limit 10)")
 	}
-	if result.LastPK != "2" {
-		t.Errorf("LastPK = %s, want 2", result.LastPK)
+	if event.EncodePK(result.LastPK) != "2" {
+		t.Errorf("LastPK = %v, want [2]", result.LastPK)
 	}
 }
 
@@ -76,10 +85,10 @@ func TestSelector_MultipleChunks(t *testing.T) {
 		rows[i] = map[string]any{"ID": int64(i + 1), "V": fmt.Sprintf("val%d", i+1)}
 	}
 
-	q := &mockQuerier{pkCol: "ID", scn: 100, rows: rows}
+	q := &mockQuerier{pkCols: []string{"ID"}, scn: 100, rows: rows}
 	s := chunk.NewSelector(q)
 
-	r1, err := s.Next(context.Background(), "T", "", 2, 100)
+	r1, err := s.Next(context.Background(), "T", nil, 2, 100)
 	if err != nil {
 		t.Fatalf("chunk 1 error: %v", err)
 	}

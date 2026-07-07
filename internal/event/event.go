@@ -1,5 +1,7 @@
 package event
 
+import "strings"
+
 type OpType int
 
 const (
@@ -25,14 +27,23 @@ type Event struct {
 	Table   string
 	Op      OpType
 	SCN     uint64
-	PK      string
+	PK      []string
+	Columns map[string]any
+}
+
+type ChunkRow struct {
+	PK      []string
 	Columns map[string]any
 }
 
 type ChunkResult struct {
 	Table    string
 	SCN      uint64
-	Rows     map[string]map[string]any
-	LastPK   string
+	Rows     map[string]ChunkRow
+	LastPK   []string
 	Complete bool
+}
+
+func EncodePK(pk []string) string {
+	return strings.Join(pk, "\x00")
 }

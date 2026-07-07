@@ -2,6 +2,7 @@ package progress
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,11 +30,11 @@ func (s *PgStore) EnsureTable(ctx context.Context) error {
 
 func (s *PgStore) Get(ctx context.Context, table string) (State, error) {
 	var state State
-	var lastPK *string
+	var lastPKStr *string
 	var lastSCN *int64
 
 	query := fmt.Sprintf("SELECT last_pk, last_lsn FROM %s WHERE table_name = $1", s.tableName)
-	err := s.pool.QueryRow(ctx, query, table).Scan(&lastPK, &lastSCN)
+	err := s.pool.QueryRow(ctx, query, table).Scan(&lastPKStr, &lastSCN)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
 			return State{}, nil
@@ -41,14 +42,32 @@ func (s *PgStore) Get(ctx context.Context, table string) (State, error) {
 		return State{}, fmt.Errorf("get progress: %w", err)
 	}
 
-	state.LastPK = lastPK
+	if lastPKStr != nil {
+		// Try JSON array first, fall back to plain string for backwards compat
+		var pk []string
+		if err := json.Unmarshal([]byte(*lastPKStr), &pk); err != nil {
+			// Plain string value from old format
+			pk = []string{*lastPKStr}
+		}
+		state.LastPK = pk
+	}
 	if lastSCN != nil {
 		state.LastSCN = uint64(*lastSCN)
 	}
 	return state, nil
 }
 
-func (s *PgStore) Save(ctx context.Context, table string, lastPK *string, lastSCN uint64) error {
+func (s *PgStore) Save(ctx context.Context, table string, lastPK []string, lastSCN uint64) error {
+	var lastPKStr *string
+	if lastPK != nil {
+		data, err := json.Marshal(lastPK)
+		if err != nil {
+			return fmt.Errorf("marshal lastPK: %w", err)
+		}
+		s := string(data)
+		lastPKStr = &s
+	}
+
 	query := fmt.Sprintf(`INSERT INTO %s (table_name, last_pk, last_lsn, updated_at)
 		VALUES ($1, $2, $3, now())
 		ON CONFLICT (table_name) DO UPDATE SET
@@ -57,6 +76,6 @@ func (s *PgStore) Save(ctx context.Context, table string, lastPK *string, lastSC
 			updated_at = now()`, s.tableName)
 
 	scn := int64(lastSCN)
-	_, err := s.pool.Exec(ctx, query, table, lastPK, &scn)
+	_, err := s.pool.Exec(ctx, query, table, lastPKStr, &scn)
 	return err
 }

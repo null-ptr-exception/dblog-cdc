@@ -10,15 +10,15 @@ import (
 func TestBuffer_CDCOnly(t *testing.T) {
 	b := buffer.New()
 
-	b.PushCDC(event.Event{Table: "T", Op: event.OpInsert, SCN: 100, PK: "1", Columns: map[string]any{"v": "a"}})
-	b.PushCDC(event.Event{Table: "T", Op: event.OpUpdate, SCN: 101, PK: "2", Columns: map[string]any{"v": "b"}})
+	b.PushCDC(event.Event{Table: "T", Op: event.OpInsert, SCN: 100, PK: []string{"1"}, Columns: map[string]any{"v": "a"}})
+	b.PushCDC(event.Event{Table: "T", Op: event.OpUpdate, SCN: 101, PK: []string{"2"}, Columns: map[string]any{"v": "b"}})
 
 	out := b.Drain()
 	if len(out) != 2 {
 		t.Fatalf("got %d events, want 2", len(out))
 	}
-	if out[0].PK != "1" || out[1].PK != "2" {
-		t.Errorf("wrong PKs: %s, %s", out[0].PK, out[1].PK)
+	if event.EncodePK(out[0].PK) != "1" || event.EncodePK(out[1].PK) != "2" {
+		t.Errorf("wrong PKs: %v, %v", out[0].PK, out[1].PK)
 	}
 }
 
@@ -28,12 +28,12 @@ func TestBuffer_ChunkOnly(t *testing.T) {
 	chunk := event.ChunkResult{
 		Table: "T",
 		SCN:   100,
-		Rows: map[string]map[string]any{
-			"1": {"v": "a"},
-			"2": {"v": "b"},
-			"3": {"v": "c"},
+		Rows: map[string]event.ChunkRow{
+			"1": {PK: []string{"1"}, Columns: map[string]any{"v": "a"}},
+			"2": {PK: []string{"2"}, Columns: map[string]any{"v": "b"}},
+			"3": {PK: []string{"3"}, Columns: map[string]any{"v": "c"}},
 		},
-		LastPK: "3",
+		LastPK: []string{"3"},
 	}
 	b.PushChunk(chunk)
 
@@ -49,16 +49,16 @@ func TestBuffer_CDCWinsOverChunk(t *testing.T) {
 	chunk := event.ChunkResult{
 		Table: "T",
 		SCN:   100,
-		Rows: map[string]map[string]any{
-			"1": {"v": "chunk_1"},
-			"2": {"v": "chunk_2"},
-			"3": {"v": "chunk_3"},
+		Rows: map[string]event.ChunkRow{
+			"1": {PK: []string{"1"}, Columns: map[string]any{"v": "chunk_1"}},
+			"2": {PK: []string{"2"}, Columns: map[string]any{"v": "chunk_2"}},
+			"3": {PK: []string{"3"}, Columns: map[string]any{"v": "chunk_3"}},
 		},
-		LastPK: "3",
+		LastPK: []string{"3"},
 	}
 	b.PushChunk(chunk)
 
-	b.ApplyCDCDedup(event.Event{Table: "T", Op: event.OpUpdate, SCN: 105, PK: "2", Columns: map[string]any{"v": "cdc_2"}})
+	b.ApplyCDCDedup(event.Event{Table: "T", Op: event.OpUpdate, SCN: 105, PK: []string{"2"}, Columns: map[string]any{"v": "cdc_2"}})
 
 	out := b.Drain()
 	if len(out) != 3 {
@@ -67,7 +67,7 @@ func TestBuffer_CDCWinsOverChunk(t *testing.T) {
 
 	byPK := map[string]event.Event{}
 	for _, e := range out {
-		byPK[e.PK] = e
+		byPK[event.EncodePK(e.PK)] = e
 	}
 
 	if byPK["1"].Columns["v"] != "chunk_1" {
@@ -87,19 +87,19 @@ func TestBuffer_CDCBeforeChunkSCN_NoDedup(t *testing.T) {
 	chunk := event.ChunkResult{
 		Table: "T",
 		SCN:   100,
-		Rows: map[string]map[string]any{
-			"1": {"v": "chunk_1"},
+		Rows: map[string]event.ChunkRow{
+			"1": {PK: []string{"1"}, Columns: map[string]any{"v": "chunk_1"}},
 		},
-		LastPK: "1",
+		LastPK: []string{"1"},
 	}
 	b.PushChunk(chunk)
 
-	b.ApplyCDCDedup(event.Event{Table: "T", Op: event.OpUpdate, SCN: 90, PK: "1", Columns: map[string]any{"v": "old"}})
+	b.ApplyCDCDedup(event.Event{Table: "T", Op: event.OpUpdate, SCN: 90, PK: []string{"1"}, Columns: map[string]any{"v": "old"}})
 
 	out := b.Drain()
 	byPK := map[string]event.Event{}
 	for _, e := range out {
-		byPK[e.PK] = e
+		byPK[event.EncodePK(e.PK)] = e
 	}
 	if byPK["1"].Columns["v"] != "chunk_1" {
 		t.Errorf("PK 1 should be from chunk (newer), got %v", byPK["1"].Columns["v"])
@@ -112,15 +112,15 @@ func TestBuffer_CDCDeleteRemovesChunkRow(t *testing.T) {
 	chunk := event.ChunkResult{
 		Table: "T",
 		SCN:   100,
-		Rows: map[string]map[string]any{
-			"1": {"v": "chunk_1"},
-			"2": {"v": "chunk_2"},
+		Rows: map[string]event.ChunkRow{
+			"1": {PK: []string{"1"}, Columns: map[string]any{"v": "chunk_1"}},
+			"2": {PK: []string{"2"}, Columns: map[string]any{"v": "chunk_2"}},
 		},
-		LastPK: "2",
+		LastPK: []string{"2"},
 	}
 	b.PushChunk(chunk)
 
-	b.ApplyCDCDedup(event.Event{Table: "T", Op: event.OpDelete, SCN: 105, PK: "1"})
+	b.ApplyCDCDedup(event.Event{Table: "T", Op: event.OpDelete, SCN: 105, PK: []string{"1"}})
 
 	out := b.Drain()
 	if len(out) != 2 {
@@ -129,7 +129,7 @@ func TestBuffer_CDCDeleteRemovesChunkRow(t *testing.T) {
 
 	byPK := map[string]event.Event{}
 	for _, e := range out {
-		byPK[e.PK] = e
+		byPK[event.EncodePK(e.PK)] = e
 	}
 	if byPK["1"].Op != event.OpDelete {
 		t.Errorf("PK 1 should be DELETE, got %v", byPK["1"].Op)

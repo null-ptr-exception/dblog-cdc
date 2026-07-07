@@ -62,13 +62,13 @@ func (r *Replicator) Run(ctx context.Context) error {
 		return err
 	}
 
-	var lastPK string
+	var lastPK []string
 	chunksComplete := false
-	if state.LastPK != nil {
-		if *state.LastPK == chunksCompleteMarker {
+	if len(state.LastPK) > 0 {
+		if len(state.LastPK) == 1 && state.LastPK[0] == chunksCompleteMarker {
 			chunksComplete = true
 		} else {
-			lastPK = *state.LastPK
+			lastPK = state.LastPK
 		}
 	}
 
@@ -141,10 +141,10 @@ func (r *Replicator) Run(ctx context.Context) error {
 			lastPK = chunkResult.LastPK
 			pk := lastPK
 			if chunkResult.Complete {
-				pk = chunksCompleteMarker
+				pk = []string{chunksCompleteMarker}
 				chunksComplete = true
 			}
-			if err := r.store.Save(ctx, r.table.Name, &pk, scnBefore); err != nil {
+			if err := r.store.Save(ctx, r.table.Name, pk, scnBefore); err != nil {
 				return err
 			}
 
