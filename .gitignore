@@ -1,4 +1,5 @@
 # Binary
+/dblog
 dblog-cdc
 cmd/dblog/dblog
 
@@ -8,6 +9,4 @@ cmd/dblog/dblog
 
 # Test
 coverage.out
-
-dblog
-
+integration.test
