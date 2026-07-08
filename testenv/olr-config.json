@@ -26,7 +26,8 @@
           {"owner": "TESTUSER", "table": "ORDERS"},
           {"owner": "TESTUSER", "table": "TYPE_TEST"},
           {"owner": "TESTUSER", "table": "TYPE_STRESS"},
-          {"owner": "TESTUSER", "table": "COMPOUND_PK_TEST"}
+          {"owner": "TESTUSER", "table": "COMPOUND_PK_TEST"},
+          {"owner": "TESTUSER", "table": "CPK_STRESS"}
         ]
       }
     }
