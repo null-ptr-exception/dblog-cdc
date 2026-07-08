@@ -74,6 +74,9 @@ func main() {
 
 		cdcClient := olr.NewClient(cfg.CDC.Host, cfg.CDC.Port, "", tableNames, pkColumns)
 		querier := chunk.NewOracleQuerier(oracleDB, tbl.PKColumns)
+		if colTypes, ok := typeMap[tbl.Name]; ok {
+			querier.SetPKTypes(colTypes)
+		}
 		ybWriter := writer.NewPgWriter(ybPool, tbl.PKColumns)
 
 		r := replicator.New(cdcClient, querier, ybWriter, pgStore, tbl)

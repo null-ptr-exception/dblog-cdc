@@ -7,15 +7,45 @@ import (
 	"strings"
 
 	"github.com/null-ptr-exception/dblog-cdc/internal/event"
+	"github.com/null-ptr-exception/dblog-cdc/internal/transform"
 )
 
 type OracleQuerier struct {
 	db     *sql.DB
 	pkCols []string
+	// pkExprs are SQL expressions for each PK column, wrapping DATE/TIMESTAMP
+	// with TO_CHAR for consistent string comparison and ordering.
+	pkExprs []string
 }
 
 func NewOracleQuerier(db *sql.DB, pkCols []string) *OracleQuerier {
-	return &OracleQuerier{db: db, pkCols: pkCols}
+	exprs := make([]string, len(pkCols))
+	for i, col := range pkCols {
+		exprs[i] = col
+	}
+	return &OracleQuerier{db: db, pkCols: pkCols, pkExprs: exprs}
+}
+
+// SetPKTypes configures type-aware expressions for PK columns that are
+// DATE or TIMESTAMP, so row-value comparisons use sortable string representations.
+func (o *OracleQuerier) SetPKTypes(colTypes map[string]transform.ColumnType) {
+	for i, col := range o.pkCols {
+		ct, ok := colTypes[col]
+		if !ok {
+			continue
+		}
+		dt := strings.ToUpper(ct.DataType)
+		switch {
+		case dt == "DATE":
+			o.pkExprs[i] = fmt.Sprintf("TO_CHAR(%s, 'YYYY-MM-DD HH24:MI:SS')", col)
+		case strings.HasPrefix(dt, "TIMESTAMP"):
+			o.pkExprs[i] = fmt.Sprintf("TO_CHAR(%s, 'YYYY-MM-DD HH24:MI:SS.FF6')", col)
+		case dt == "NUMBER" || dt == "FLOAT":
+			// Leave as-is — Oracle handles implicit string→number conversion
+			// for bind params, and native numeric ordering is correct.
+			// TO_CHAR(number) would produce lexicographic ordering (100 < 5 < 9).
+		}
+	}
 }
 
 func (o *OracleQuerier) CurrentSCN(ctx context.Context) (uint64, error) {
@@ -29,25 +59,35 @@ func (o *OracleQuerier) QueryChunk(ctx context.Context, table string, afterPK []
 	var args []any
 
 	if len(afterPK) > 0 {
-		// Row-value comparison: (col1, col2) > (:1, :2)
-		colList := strings.Join(o.pkCols, ", ")
+		// Row-value comparison using type-aware expressions
+		exprList := strings.Join(o.pkExprs, ", ")
 		placeholders := make([]string, len(o.pkCols))
 		for i := range o.pkCols {
 			placeholders[i] = fmt.Sprintf(":%d", i+1)
 			args = append(args, afterPK[i])
 		}
-		whereClause = fmt.Sprintf("(%s) > (%s)", colList, strings.Join(placeholders, ", "))
+		whereClause = fmt.Sprintf("(%s) > (%s)", exprList, strings.Join(placeholders, ", "))
 	} else {
 		whereClause = "1=1"
 	}
 
-	orderBy := strings.Join(o.pkCols, ", ")
+	orderBy := strings.Join(o.pkExprs, ", ")
 	limitPlaceholder := fmt.Sprintf(":%d", len(args)+1)
 	args = append(args, limit)
 
+	// Build PK extraction expressions for SELECT
+	pkSelects := make([]string, len(o.pkCols))
+	for i, expr := range o.pkExprs {
+		if expr != o.pkCols[i] {
+			pkSelects[i] = fmt.Sprintf("%s AS PK_%s", expr, o.pkCols[i])
+		} else {
+			pkSelects[i] = fmt.Sprintf("TO_CHAR(%s) AS PK_%s", o.pkCols[i], o.pkCols[i])
+		}
+	}
+
 	query := fmt.Sprintf(
-		"SELECT * FROM %s AS OF SCN %d WHERE %s ORDER BY %s ASC FETCH FIRST %s ROWS ONLY",
-		table, scn, whereClause, orderBy, limitPlaceholder,
+		"SELECT %s, t.* FROM %s AS OF SCN %d t WHERE %s ORDER BY %s ASC FETCH FIRST %s ROWS ONLY",
+		strings.Join(pkSelects, ", "), table, scn, whereClause, orderBy, limitPlaceholder,
 	)
 
 	rows, err := o.db.QueryContext(ctx, query, args...)
@@ -61,11 +101,7 @@ func (o *OracleQuerier) QueryChunk(ctx context.Context, table string, afterPK []
 		return nil, fmt.Errorf("columns: %w", err)
 	}
 
-	// Build a set of PK column names for fast lookup
-	pkSet := make(map[string]bool, len(o.pkCols))
-	for _, c := range o.pkCols {
-		pkSet[c] = true
-	}
+	numPKExtras := len(o.pkCols)
 
 	result := &event.ChunkResult{
 		Table: table,
@@ -85,14 +121,16 @@ func (o *OracleQuerier) QueryChunk(ctx context.Context, table string, afterPK []
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 
-		rowMap := make(map[string]any, len(cols))
-		pk := make([]string, 0, len(o.pkCols))
-		for i, col := range cols {
-			rowMap[col] = values[i]
+		// First numPKExtras columns are the PK string extractions
+		pk := make([]string, numPKExtras)
+		for i := 0; i < numPKExtras; i++ {
+			pk[i] = fmt.Sprint(values[i])
 		}
-		// Extract PK values in pkCols order
-		for _, pkc := range o.pkCols {
-			pk = append(pk, fmt.Sprint(rowMap[pkc]))
+
+		// Remaining columns are the actual table columns (from t.*)
+		rowMap := make(map[string]any, len(cols)-numPKExtras)
+		for i := numPKExtras; i < len(cols); i++ {
+			rowMap[cols[i]] = values[i]
 		}
 
 		key := event.EncodePK(pk)

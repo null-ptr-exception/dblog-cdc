@@ -181,6 +181,9 @@ func (e *testEnv) startReplicatorForTable(table string, pkCols []string, chunkSi
 	if err != nil {
 		e.t.Fatalf("load type map: %v", err)
 	}
+	if colTypes, ok := typeMap[table]; ok {
+		querier.SetPKTypes(colTypes)
+	}
 
 	tbl := config.Table{Name: table, ChunkSize: chunkSize}
 	r := replicator.New(cdcClient, querier, ybWriter, pgStore, tbl)
