@@ -81,10 +81,17 @@ func setupEnv(t *testing.T, ctx context.Context) *testEnv {
 	return &testEnv{t: t, ctx: ctx, oracleDB: oracleDB, ybPool: ybPool}
 }
 
-// cleanRange deletes rows in [startPK, startPK+count-1] from both Oracle and YB.
-// Uses DELETE (DML) to avoid TRUNCATE/DDL issues.
-// Saves the current Oracle SCN to progress so OLR skips old redo on reconnect.
+// cleanRange deletes rows in [startPK, startPK+count-1] from both Oracle and YB,
+// then saves the current Oracle SCN to progress.
 func (e *testEnv) cleanRange(startPK, count int) {
+	e.t.Helper()
+	e.cleanRangeNoSCN(startPK, count)
+	e.saveSCN("ORDERS")
+}
+
+// cleanRangeNoSCN deletes rows without saving SCN — use when you need to
+// seed data between the clean and the SCN save.
+func (e *testEnv) cleanRangeNoSCN(startPK, count int) {
 	e.t.Helper()
 	endPK := startPK + count - 1
 	if _, err := e.oracleDB.ExecContext(e.ctx,
@@ -95,16 +102,19 @@ func (e *testEnv) cleanRange(startPK, count int) {
 		"DELETE FROM ORDERS WHERE ID BETWEEN $1 AND $2", startPK, endPK); err != nil {
 		e.t.Fatalf("clean yb range %d-%d: %v", startPK, endPK, err)
 	}
+}
 
+// saveSCN saves the current Oracle SCN to progress for the given table.
+func (e *testEnv) saveSCN(table string) {
+	e.t.Helper()
 	var scn int64
 	if err := e.oracleDB.QueryRowContext(e.ctx,
 		"SELECT current_scn FROM v$database").Scan(&scn); err != nil {
 		e.t.Fatalf("get current scn: %v", err)
 	}
-
 	pgStore := progress.NewPgStore(e.ybPool, "dblog_progress")
 	pgStore.EnsureTable(e.ctx)
-	pgStore.Save(e.ctx, "ORDERS", nil, uint64(scn))
+	pgStore.Save(e.ctx, table, nil, uint64(scn))
 }
 
 // scheduleCleanup registers a post-test cleanup using a fresh context

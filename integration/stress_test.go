@@ -16,20 +16,24 @@ import (
 // replicator is running, then stops writes, waits for convergence, and asserts
 // Oracle == YB. Repeats for multiple rounds to catch intermittent issues.
 //
-// PK range: 5000-14999 (10,000 slots)
+// PK range: 5000-5499 (500 slots)
 //
 // Env vars to tune:
 //
-//	STRESS_WORKERS    — concurrent writer goroutines (default 4)
-//	STRESS_ROUND_SEC  — seconds per round (default 15)
+//	STRESS_WORKERS    — concurrent writer goroutines (default 2)
+//	STRESS_ROUND_SEC  — seconds per round (default 10)
 //	STRESS_ROUNDS     — number of verification rounds (default 3)
-//	STRESS_PK_RANGE   — PK range size (default 1000)
+//	STRESS_PK_RANGE   — PK range size (default 500)
+//	STRESS_SEED       — initial seed rows (default 500)
+//	STRESS_CHUNK_SIZE — rows per chunk read (default 5)
 func TestReplication_Stress(t *testing.T) {
 	numWorkers := envOrInt("STRESS_WORKERS", 2)
 	roundDuration := time.Duration(envOrInt("STRESS_ROUND_SEC", 10)) * time.Second
 	numRounds := envOrInt("STRESS_ROUNDS", 3)
 	pkRange := envOrInt("STRESS_PK_RANGE", 500)
 	opDelayMs := envOrInt("STRESS_OP_DELAY_MS", 1)
+	seedCount := envOrInt("STRESS_SEED", 500)
+	chunkSize := envOrInt("STRESS_CHUNK_SIZE", 5)
 
 	const startPK = 5000
 	endPK := startPK + pkRange - 1
@@ -41,23 +45,27 @@ func TestReplication_Stress(t *testing.T) {
 
 	env := setupEnv(t, ctx)
 	cleanRange := pkRange + 1 // include sentinel PK
-	env.cleanRange(startPK, cleanRange)
+	env.cleanRangeNoSCN(startPK, cleanRange)
 	env.scheduleCleanup(startPK, cleanRange)
 
-	t.Logf("stress config: workers=%d round=%v rounds=%d pk_range=%d-%d op_delay=%dms",
-		numWorkers, roundDuration, numRounds, startPK, endPK, opDelayMs)
+	// Seed BEFORE saving SCN so chunk loading actually finds data.
+	// With seedCount=500 and chunkSize=5, chunk loading takes ~100
+	// iterations, giving CDC events time to race against chunk reads.
+	env.seedRows(startPK, seedCount, 1.0, "SEED")
+	env.saveSCN("ORDERS")
 
-	rh := env.startReplicator(50)
+	t.Logf("stress config: workers=%d round=%v rounds=%d pk_range=%d-%d seed=%d chunk_size=%d op_delay=%dms",
+		numWorkers, roundDuration, numRounds, startPK, endPK, seedCount, chunkSize, opDelayMs)
+
+	rh := env.startReplicator(chunkSize)
 	defer rh.cancel()
 
-	// Wait for OLR to be streaming before hammering writes
+	// Wait for OLR to be streaming, then start mutations immediately
+	// while chunk loading is still in progress.
 	if err := rh.cdcClient.WaitStreaming(ctx); err != nil {
 		t.Fatalf("wait for CDC streaming: %v", err)
 	}
-	t.Log("CDC streaming ready, seeding initial data")
-
-	// Seed some rows so chunk loading and CDC have data to work with
-	env.seedRows(startPK, 100, 1.0, "SEED")
+	t.Log("CDC streaming ready, starting mutations while chunks load")
 
 	var totalInserts, totalUpdates, totalDeletes atomic.Int64
 
