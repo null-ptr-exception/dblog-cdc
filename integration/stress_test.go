@@ -16,24 +16,24 @@ import (
 // replicator is running, then stops writes, waits for convergence, and asserts
 // Oracle == YB. Repeats for multiple rounds to catch intermittent issues.
 //
-// PK range: 5000-5499 (500 slots)
+// PK range: 5000-6999 (2000 slots)
 //
 // Env vars to tune:
 //
 //	STRESS_WORKERS    — concurrent writer goroutines (default 2)
 //	STRESS_ROUND_SEC  — seconds per round (default 10)
 //	STRESS_ROUNDS     — number of verification rounds (default 3)
-//	STRESS_PK_RANGE   — PK range size (default 500)
-//	STRESS_SEED       — initial seed rows (default 500)
-//	STRESS_CHUNK_SIZE — rows per chunk read (default 5)
+//	STRESS_PK_RANGE   — PK range size (default 2000)
+//	STRESS_SEED       — initial seed rows (default 2000)
+//	STRESS_CHUNK_SIZE — rows per chunk read (default 3)
 func TestReplication_Stress(t *testing.T) {
 	numWorkers := envOrInt("STRESS_WORKERS", 2)
 	roundDuration := time.Duration(envOrInt("STRESS_ROUND_SEC", 10)) * time.Second
 	numRounds := envOrInt("STRESS_ROUNDS", 3)
-	pkRange := envOrInt("STRESS_PK_RANGE", 500)
+	pkRange := envOrInt("STRESS_PK_RANGE", 2000)
 	opDelayMs := envOrInt("STRESS_OP_DELAY_MS", 1)
-	seedCount := envOrInt("STRESS_SEED", 500)
-	chunkSize := envOrInt("STRESS_CHUNK_SIZE", 5)
+	seedCount := envOrInt("STRESS_SEED", 2000)
+	chunkSize := envOrInt("STRESS_CHUNK_SIZE", 3)
 
 	const startPK = 5000
 	endPK := startPK + pkRange - 1
@@ -49,8 +49,8 @@ func TestReplication_Stress(t *testing.T) {
 	env.scheduleCleanup(startPK, cleanRange)
 
 	// Seed BEFORE saving SCN so chunk loading actually finds data.
-	// With seedCount=500 and chunkSize=5, chunk loading takes ~100
-	// iterations, giving CDC events time to race against chunk reads.
+	// With seedCount=2000 and chunkSize=3, chunk loading takes ~667
+	// iterations (~15-20s), ensuring CDC mutations race against chunks.
 	env.seedRows(startPK, seedCount, 1.0, "SEED")
 	env.saveSCN("ORDERS")
 
@@ -60,12 +60,19 @@ func TestReplication_Stress(t *testing.T) {
 	rh := env.startReplicator(chunkSize)
 	defer rh.cancel()
 
-	// Wait for OLR to be streaming, then start mutations immediately
-	// while chunk loading is still in progress.
 	if err := rh.cdcClient.WaitStreaming(ctx); err != nil {
 		t.Fatalf("wait for CDC streaming: %v", err)
 	}
-	t.Log("CDC streaming ready, starting mutations while chunks load")
+
+	// Verify chunks haven't finished yet — proves mutations will overlap.
+	var ybCount int
+	env.ybPool.QueryRow(ctx, "SELECT COUNT(*) FROM ORDERS WHERE ID BETWEEN $1 AND $2",
+		startPK, endPK).Scan(&ybCount)
+	t.Logf("CDC streaming ready, YB has %d/%d rows — chunks still loading, starting mutations",
+		ybCount, seedCount)
+	if ybCount >= seedCount {
+		t.Log("WARNING: chunks finished before mutations started — overlap not guaranteed")
+	}
 
 	var totalInserts, totalUpdates, totalDeletes atomic.Int64
 
