@@ -280,3 +280,106 @@ func TestReplicator_CDCErrorDuringChunks(t *testing.T) {
 	}
 	t.Logf("got error (expected): %v", err)
 }
+
+// TestReplicator_CDCDiesDuringSlowChunks verifies behavior when CDC dies
+// while chunk loading is still in progress across multiple iterations.
+// The replicator continues loading chunks without CDC dedup — any mutations
+// that occurred after CDC died are silently lost. The error only surfaces
+// after all chunks complete.
+func TestReplicator_CDCDiesDuringSlowChunks(t *testing.T) {
+	cdcDied := make(chan struct{})
+	cdc := &mockCDCSource{
+		streamFn: func(ctx context.Context, startSCN uint64, ch chan<- event.Event) error {
+			// Send one CDC event then die
+			ch <- event.Event{Table: "T", Op: event.OpUpdate, SCN: 105, PK: []string{"1"},
+				Columns: map[string]any{"ID": int64(1), "V": "cdc_v1"}}
+			close(cdcDied)
+			return fmt.Errorf("CDC connection lost")
+		},
+	}
+
+	chunks := &mockChunkQuerier{
+		pkCols: []string{"ID"},
+		rows: []map[string]any{
+			{"ID": int64(1), "V": "chunk_1"},
+			{"ID": int64(2), "V": "chunk_2"},
+			{"ID": int64(3), "V": "chunk_3"},
+			{"ID": int64(4), "V": "chunk_4"},
+			{"ID": int64(5), "V": "chunk_5"},
+		},
+		onQuery: func() { <-cdcDied }, // ensure CDC has died before first chunk returns
+	}
+
+	writer := &captureWriter{}
+	store := progress.NewMemoryStore()
+
+	// chunkSize=1: 5 iterations, CDC dies before first chunk returns
+	cfg := config.Table{Name: "T", ChunkSize: 1}
+	r := replicator.New(cdc, chunks, writer, store, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := r.Run(ctx)
+
+	// Error should surface after chunks complete
+	if err == nil {
+		t.Fatal("expected CDC error to surface")
+	}
+	if err.Error() != "CDC connection lost" {
+		t.Errorf("expected 'CDC connection lost', got: %v", err)
+	}
+
+	// All 5 chunks should have been written (replicator didn't abort early)
+	found := map[string]bool{}
+	for _, e := range writer.events {
+		found[event.EncodePK(e.PK)] = true
+	}
+	for i := 1; i <= 5; i++ {
+		pk := fmt.Sprint(i)
+		if !found[pk] {
+			t.Errorf("PK %s should have been written (chunks continue after CDC death)", pk)
+		}
+	}
+
+	// Progress should be saved as __COMPLETE__ (chunks finished)
+	state, _ := store.Get(context.Background(), "T")
+	if len(state.LastPK) != 1 || state.LastPK[0] != "__COMPLETE__" {
+		t.Errorf("chunks should have completed despite CDC death, got %v", state.LastPK)
+	}
+
+	t.Log("BUG: replicator continued all 5 chunk iterations after CDC died — no dedup for those chunks")
+}
+
+func TestReplicator_EmptyTable(t *testing.T) {
+	cdc := &mockCDCSource{}
+	chunks := &mockChunkQuerier{
+		pkCols: []string{"ID"},
+		rows:   []map[string]any{}, // no rows
+	}
+
+	writer := &captureWriter{}
+	store := progress.NewMemoryStore()
+
+	cfg := config.Table{Name: "T", ChunkSize: 10}
+	r := replicator.New(cdc, chunks, writer, store, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := r.Run(ctx)
+	if err != nil && err != context.DeadlineExceeded {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// No rows should be written
+	if len(writer.events) != 0 {
+		t.Errorf("expected 0 events for empty table, got %d", len(writer.events))
+	}
+
+	// Progress should still be saved as __COMPLETE__
+	state, _ := store.Get(context.Background(), "T")
+	if len(state.LastPK) != 1 || state.LastPK[0] != "__COMPLETE__" {
+		t.Errorf("empty table should still mark chunks complete, got %v", state.LastPK)
+	}
+}

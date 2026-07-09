@@ -174,3 +174,31 @@ func TestBuildUpsertSQL_CompoundPK(t *testing.T) {
 	}
 	t.Logf("SQL: %s", sql)
 }
+
+func TestBuildUpsertSQL_EmptyColumns(t *testing.T) {
+	sql, args := writer.BuildUpsertSQL("T", []string{"ID"}, event.Event{
+		Table:   "T",
+		Op:      event.OpInsert,
+		PK:      []string{"1"},
+		Columns: map[string]any{},
+	})
+
+	// Empty columns produces INSERT INTO T () VALUES () — invalid SQL.
+	// Document this boundary behavior.
+	if len(args) != 0 {
+		t.Errorf("expected 0 args for empty columns, got %d", len(args))
+	}
+	t.Logf("BUG: empty columns produces invalid SQL: %s", sql)
+}
+
+func TestBuildDeleteSQL_PKLengthMismatch(t *testing.T) {
+	// pk has fewer elements than pkCols — this would panic with index out of range
+	defer func() {
+		if r := recover(); r != nil {
+			t.Logf("BUG: BuildDeleteSQL panics on PK length mismatch: %v", r)
+		}
+	}()
+
+	writer.BuildDeleteSQL("T", []string{"K1", "K2"}, []string{"only_one"})
+	t.Error("expected panic from PK length mismatch, but it didn't panic")
+}

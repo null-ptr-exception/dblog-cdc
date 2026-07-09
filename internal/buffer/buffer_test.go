@@ -262,3 +262,40 @@ func TestBuffer_CDCBeforeChunkPushed(t *testing.T) {
 		t.Fatalf("got %d events, want 2 (early CDC + chunk)", len(out))
 	}
 }
+
+func TestBuffer_NullBytePKCollision(t *testing.T) {
+	b := buffer.New()
+
+	// Chunk has a compound PK ["a", "b"] which encodes as "a\x00b"
+	compoundKey := event.EncodePK([]string{"a", "b"})
+	chunk := event.ChunkResult{
+		Table: "T",
+		SCN:   100,
+		Rows: map[string]event.ChunkRow{
+			compoundKey: {PK: []string{"a", "b"}, Columns: map[string]any{"v": "compound_row"}},
+		},
+		LastPK: []string{"b"},
+	}
+	b.PushChunk(chunk)
+
+	// CDC event has a SINGLE PK value that contains \x00: ["a\x00b"]
+	// EncodePK would produce the same key "a\x00b" — causing incorrect dedup.
+	b.ApplyCDCDedup(event.Event{
+		Table: "T", Op: event.OpDelete, SCN: 105,
+		PK: []string{"a\x00b"},
+	})
+
+	out := b.Drain()
+
+	// If EncodePK has a collision, the chunk row for ["a","b"] would be
+	// incorrectly removed by the CDC event for ["a\x00b"].
+	hasCompoundRow := false
+	for _, e := range out {
+		if len(e.PK) == 2 && e.PK[0] == "a" && e.PK[1] == "b" {
+			hasCompoundRow = true
+		}
+	}
+	if !hasCompoundRow {
+		t.Error("BUG: compound PK [a,b] was incorrectly deduped by single PK [a\\x00b] — EncodePK collision")
+	}
+}
