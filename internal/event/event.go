@@ -1,6 +1,9 @@
 package event
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 type OpType int
 
@@ -45,5 +48,12 @@ type ChunkResult struct {
 }
 
 func EncodePK(pk []string) string {
-	return strings.Join(pk, "\x00")
+	if len(pk) == 1 {
+		return pk[0]
+	}
+	parts := make([]string, len(pk))
+	for i, v := range pk {
+		parts[i] = fmt.Sprintf("%d:%s", len(v), v)
+	}
+	return strings.Join(parts, ",")
 }
