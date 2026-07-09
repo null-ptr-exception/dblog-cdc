@@ -28,12 +28,13 @@ func (b *Buffer) ApplyCDCDedup(e event.Event) {
 	}
 
 	key := event.EncodePK(e.PK)
-	if e.SCN > b.chunk.SCN {
-		if _, exists := b.chunk.Rows[key]; exists {
+	if _, exists := b.chunk.Rows[key]; exists {
+		if e.SCN > b.chunk.SCN {
 			delete(b.chunk.Rows, key)
 			b.cdcDedup = append(b.cdcDedup, e)
-			return
 		}
+		// SCN <= chunk SCN: chunk is authoritative, drop stale CDC event
+		return
 	}
 
 	b.cdcDedup = append(b.cdcDedup, e)
