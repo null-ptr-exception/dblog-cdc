@@ -45,6 +45,8 @@ type mockChunkQuerier struct {
 	rows    []map[string]any
 	pkCols  []string
 	scn     uint64        // 0 defaults to 100
+	scns    []uint64      // if set, CurrentSCN returns these sequentially
+	scnIdx  int
 	onQuery func()        // called before returning chunk results (for synchronization)
 }
 
@@ -84,6 +86,14 @@ func (m *mockChunkQuerier) QueryChunk(_ context.Context, table string, afterPK [
 }
 
 func (m *mockChunkQuerier) CurrentSCN(_ context.Context) (uint64, error) {
+	if len(m.scns) > 0 {
+		if m.scnIdx >= len(m.scns) {
+			return m.scns[len(m.scns)-1], nil
+		}
+		scn := m.scns[m.scnIdx]
+		m.scnIdx++
+		return scn, nil
+	}
 	if m.scn > 0 {
 		return m.scn, nil
 	}
@@ -349,6 +359,113 @@ func TestReplicator_CDCDiesDuringSlowChunks(t *testing.T) {
 	}
 
 	t.Log("BUG: replicator continued all 5 chunk iterations after CDC died — no dedup for those chunks")
+}
+
+// TestReplicator_AdvancingSCN_DataLossOnRestart demonstrates that the
+// replicator's advancing SCN creates a data loss window on crash+restart.
+//
+// The replicator saves a new CurrentSCN with each chunk iteration. If CDC
+// hasn't delivered events that occurred between the first and last chunk SCNs,
+// those events are permanently lost on restart because CDC resumes from the
+// last saved SCN — skipping everything below it.
+func TestReplicator_AdvancingSCN_DataLossOnRestart(t *testing.T) {
+	store := progress.NewMemoryStore()
+
+	// Phase 1: initial run — CDC not connected, chunks advance SCN.
+	//
+	// Chunk 1 reads PK 1,2 AS OF SCN 100 — PK 2 has value "old_v2".
+	// Between SCN 100 and 200, a mutation UPDATE PK 2 = "updated_v2" occurs
+	// at SCN 150. But OLR hasn't connected, so CDC doesn't deliver it.
+	// Chunk 2 reads PK 3,4 AS OF SCN 200.
+	// Chunk 3 reads PK 5   AS OF SCN 300 (complete).
+	// Progress saves SCN 300 as LastSCN.
+
+	chunks1 := &mockChunkQuerier{
+		pkCols: []string{"ID"},
+		scns:   []uint64{100, 200, 300},
+		rows: []map[string]any{
+			{"ID": "1", "V": "v1"},
+			{"ID": "2", "V": "old_v2"},
+			{"ID": "3", "V": "v3"},
+			{"ID": "4", "V": "v4"},
+			{"ID": "5", "V": "v5"},
+		},
+	}
+
+	cdc1 := &mockCDCSource{
+		streamFn: func(ctx context.Context, startSCN uint64, ch chan<- event.Event) error {
+			// OLR slow to connect — sends nothing before crash
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+
+	writer1 := &captureWriter{}
+	cfg := config.Table{Name: "T", ChunkSize: 2}
+	r1 := replicator.New(cdc1, chunks1, writer1, store, cfg)
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel1()
+	r1.Run(ctx1)
+
+	// Verify: PK 2 was written with stale chunk data
+	pk2Found := false
+	for _, e := range writer1.events {
+		if event.EncodePK(e.PK) == "2" && e.Columns["V"] == "old_v2" {
+			pk2Found = true
+		}
+	}
+	if !pk2Found {
+		t.Fatal("phase 1: PK 2 should have been written with chunk value 'old_v2'")
+	}
+
+	// Verify: saved SCN advanced to the last chunk's SCN
+	state, _ := store.Get(context.Background(), "T")
+	if state.LastSCN < 200 {
+		t.Fatalf("expected saved SCN >= 200 (advancing), got %d", state.LastSCN)
+	}
+
+	// Phase 2: restart from saved state.
+	// CDC resumes from saved SCN (300). The mutation at SCN 150 is below
+	// the resume point — OLR will never replay it.
+
+	cdc2 := &mockCDCSource{
+		streamFn: func(ctx context.Context, startSCN uint64, ch chan<- event.Event) error {
+			// OLR streams from startSCN. It would deliver the UPDATE PK 2
+			// at SCN 150 only if startSCN <= 150. But startSCN is 300.
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+
+	chunks2 := &mockChunkQuerier{
+		pkCols: []string{"ID"},
+		rows:   []map[string]any{},
+	}
+
+	writer2 := &captureWriter{}
+	r2 := replicator.New(cdc2, chunks2, writer2, store, cfg)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel2()
+	r2.Run(ctx2)
+
+	// CDC started from saved SCN — the gap is proven
+	if cdc2.startSCN != state.LastSCN {
+		t.Fatalf("phase 2: CDC should start from saved SCN %d, got %d",
+			state.LastSCN, cdc2.startSCN)
+	}
+
+	// The mutation at SCN 150 (UPDATE PK 2 = "updated_v2") is permanently lost.
+	// CDC starts from 300, will never replay SCN 150.
+	// PK 2 has stale data "old_v2" forever (until another mutation happens).
+	if cdc2.startSCN > 150 {
+		t.Errorf("BUG: CDC resumes from SCN %d, but a mutation at SCN 150 "+
+			"was never delivered. PK 2 has stale chunk data 'old_v2' — "+
+			"the update to 'updated_v2' is permanently lost.\n"+
+			"The saved SCN should not advance past what CDC has confirmed processing.",
+			cdc2.startSCN)
+	}
 }
 
 func TestReplicator_EmptyTable(t *testing.T) {
