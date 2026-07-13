@@ -419,20 +419,20 @@ func TestReplicator_AdvancingSCN_DataLossOnRestart(t *testing.T) {
 		t.Fatal("phase 1: PK 2 should have been written with chunk value 'old_v2'")
 	}
 
-	// Verify: saved SCN advanced to the last chunk's SCN
+	// Verify: saved SCN must NOT advance past the CDC start SCN.
+	// The initial state.LastSCN was 0, so all chunk saves should use 0.
 	state, _ := store.Get(context.Background(), "T")
-	if state.LastSCN < 200 {
-		t.Fatalf("expected saved SCN >= 200 (advancing), got %d", state.LastSCN)
+	if state.LastSCN != 0 {
+		t.Fatalf("BUG: saved SCN advanced to %d — should stay at initial CDC SCN (0) "+
+			"to prevent data loss on restart", state.LastSCN)
 	}
 
 	// Phase 2: restart from saved state.
-	// CDC resumes from saved SCN (300). The mutation at SCN 150 is below
-	// the resume point — OLR will never replay it.
+	// CDC resumes from saved SCN (0). The mutation at SCN 150 WILL be
+	// replayed because startSCN (0) <= 150.
 
 	cdc2 := &mockCDCSource{
 		streamFn: func(ctx context.Context, startSCN uint64, ch chan<- event.Event) error {
-			// OLR streams from startSCN. It would deliver the UPDATE PK 2
-			// at SCN 150 only if startSCN <= 150. But startSCN is 300.
 			<-ctx.Done()
 			return ctx.Err()
 		},
@@ -450,20 +450,10 @@ func TestReplicator_AdvancingSCN_DataLossOnRestart(t *testing.T) {
 	defer cancel2()
 	r2.Run(ctx2)
 
-	// CDC started from saved SCN — the gap is proven
-	if cdc2.startSCN != state.LastSCN {
-		t.Fatalf("phase 2: CDC should start from saved SCN %d, got %d",
-			state.LastSCN, cdc2.startSCN)
-	}
-
-	// The mutation at SCN 150 (UPDATE PK 2 = "updated_v2") is permanently lost.
-	// CDC starts from 300, will never replay SCN 150.
-	// PK 2 has stale data "old_v2" forever (until another mutation happens).
+	// CDC starts from saved SCN (0) — mutation at SCN 150 would be replayed
 	if cdc2.startSCN > 150 {
-		t.Errorf("BUG: CDC resumes from SCN %d, but a mutation at SCN 150 "+
-			"was never delivered. PK 2 has stale chunk data 'old_v2' — "+
-			"the update to 'updated_v2' is permanently lost.\n"+
-			"The saved SCN should not advance past what CDC has confirmed processing.",
+		t.Errorf("CDC resumes from SCN %d, which would skip the mutation at SCN 150 — "+
+			"saved SCN must not advance past what CDC has confirmed processing",
 			cdc2.startSCN)
 	}
 }

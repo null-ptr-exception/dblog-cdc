@@ -79,6 +79,11 @@ func (r *Replicator) Run(ctx context.Context) error {
 		cdcErrCh <- r.cdc.Stream(ctx, state.LastSCN, cdcCh)
 	}()
 
+	// chunkStartSCN is the SCN from which CDC is streaming. Progress saves
+	// must never advance past this — otherwise a crash+restart would skip
+	// CDC events that haven't been delivered yet.
+	chunkStartSCN := state.LastSCN
+
 	buf := buffer.New()
 	selector := chunk.NewSelector(r.chunks)
 
@@ -144,7 +149,7 @@ func (r *Replicator) Run(ctx context.Context) error {
 				pk = []string{chunksCompleteMarker}
 				chunksComplete = true
 			}
-			if err := r.store.Save(ctx, r.table.Name, pk, scnBefore); err != nil {
+			if err := r.store.Save(ctx, r.table.Name, pk, chunkStartSCN); err != nil {
 				return err
 			}
 
